@@ -1,7 +1,7 @@
 """Typer CLI for pointy-rag."""
 
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -17,14 +17,22 @@ console = Console()
 
 @app.command()
 def init(
-    directory: Annotated[
-        Optional[Path],
-        typer.Argument(help="Directory to initialize (default: current dir)"),
+    database_url: Annotated[
+        str | None,
+        typer.Option("--database-url", help="PostgreSQL connection string"),
     ] = None,
 ):
-    """Initialize a new pointy-rag project."""
-    target = directory or Path.cwd()
-    console.print(f"[bold green]init[/] {target} (not yet implemented)")
+    """Initialize the database: create tables and indexes."""
+    from pointy_rag.db import create_tables, get_database_url
+
+    url = database_url or get_database_url()
+    console.print(f"[bold]Initializing database:[/] {url}")
+    try:
+        create_tables(url)
+        console.print("[bold green]✓[/] Tables created successfully.")
+    except Exception as exc:
+        console.print(f"[bold red]✗[/] Failed to initialize database: {exc}")
+        raise typer.Exit(code=1) from exc
 
 
 @app.command()
@@ -73,7 +81,7 @@ def drill(
 @app.command()
 def ls(
     collection: Annotated[
-        Optional[str],
+        str | None,
         typer.Argument(help="Collection to list (omit to list all collections)"),
     ] = None,
 ):
@@ -81,7 +89,7 @@ def ls(
     if collection:
         console.print(f"[bold green]ls[/] {collection} (not yet implemented)")
     else:
-        console.print("[bold green]ls[/] (listing all collections — not yet implemented)")
+        console.print("[bold green]ls[/] (listing all collections — not yet implemented)")  # noqa: E501
 
 
 def main():
