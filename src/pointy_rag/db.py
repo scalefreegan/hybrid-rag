@@ -1,16 +1,15 @@
 """PostgreSQL + pgvector database layer for pointy-rag."""
 
-import json
-import os
+import re
 from collections.abc import Generator
 from contextlib import contextmanager
 
 import psycopg
+import psycopg.rows
 from pgvector.psycopg import register_vector
 
+from pointy_rag.config import get_settings
 from pointy_rag.models import Chunk, DisclosureDoc, Document
-
-DEFAULT_DATABASE_URL = "postgresql://localhost:5432/pointy_rag"
 
 DDL = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -47,20 +46,22 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding
-    ON chunks USING ivfflat (embedding vector_cosine_ops)
-    WITH (lists = 100);
+    ON chunks USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 64);
 """
 
 
-def get_database_url() -> str:
-    return os.getenv("POINTY_DATABASE_URL", DEFAULT_DATABASE_URL)
+def _split_ddl(ddl: str) -> list[str]:
+    """Split a DDL string into individual SQL statements."""
+    statements = re.split(r";\s*\n", ddl.strip())
+    return [s.strip() + ";" for s in statements if s.strip()]
 
 
 @contextmanager
-def get_connection(  # noqa: E501
+def get_connection(
     database_url: str | None = None,
 ) -> Generator[psycopg.Connection, None, None]:
-    url = database_url or get_database_url()
+    url = database_url or get_settings().database_url
     with psycopg.connect(url) as conn:
         register_vector(conn)
         yield conn
@@ -70,7 +71,8 @@ def create_tables(database_url: str | None = None) -> None:
     """Create all tables and indexes idempotently."""
     with get_connection(database_url) as conn:
         conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-        conn.executescript(DDL)
+        for stmt in _split_ddl(DDL):
+            conn.execute(stmt)
         conn.commit()
 
 
@@ -79,14 +81,18 @@ def insert_document(doc: Document, conn: psycopg.Connection) -> None:
         """
         INSERT INTO documents (id, title, format, source_path, metadata, created_at)
         VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (id) DO NOTHING
+        ON CONFLICT (id) DO UPDATE SET
+            title = EXCLUDED.title,
+            format = EXCLUDED.format,
+            source_path = EXCLUDED.source_path,
+            metadata = EXCLUDED.metadata
         """,
         (
             doc.id,
             doc.title,
-            doc.format,
+            doc.format.value if hasattr(doc.format, "value") else doc.format,
             doc.source_path,
-            json.dumps(doc.metadata),
+            doc.metadata,
             doc.created_at,
         ),
     )
@@ -124,7 +130,7 @@ def insert_chunk(chunk: Chunk, conn: psycopg.Connection) -> None:
             chunk.disclosure_doc_id,
             chunk.content,
             chunk.embedding,
-            json.dumps(chunk.metadata),
+            chunk.metadata,
         ),
     )
 
@@ -134,14 +140,15 @@ def get_document(doc_id: str, conn: psycopg.Connection) -> Document | None:
         "SELECT id, title, format, source_path, metadata, created_at"
         " FROM documents WHERE id = %s",
         (doc_id,),
+        row_factory=psycopg.rows.dict_row,
     ).fetchone()
     if row is None:
         return None
     return Document(
-        id=row[0],
-        title=row[1],
-        format=row[2],
-        source_path=row[3],
-        metadata=row[4] if isinstance(row[4], dict) else json.loads(row[4]),
-        created_at=row[5],
+        id=row["id"],
+        title=row["title"],
+        format=row["format"],
+        source_path=row["source_path"],
+        metadata=row["metadata"],
+        created_at=row["created_at"],
     )

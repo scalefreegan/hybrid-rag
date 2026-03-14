@@ -3,23 +3,15 @@
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from pointy_rag.db import (
+    _split_ddl,
+    create_tables,
     get_document,
     insert_chunk,
     insert_disclosure_doc,
     insert_document,
 )
 from pointy_rag.models import Chunk, DisclosureDoc, DisclosureLevel, Document
-
-
-@pytest.fixture
-def mock_conn():
-    """Return a mock psycopg connection."""
-    conn = MagicMock()
-    conn.execute.return_value = conn
-    return conn
 
 
 def test_insert_document(mock_conn):
@@ -64,14 +56,14 @@ def test_insert_chunk(mock_conn):
 
 def test_get_document_found(mock_conn):
     now = datetime.now(UTC)
-    mock_conn.execute.return_value.fetchone.return_value = (
-        "doc-abc",
-        "Test Title",
-        "epub",
-        "/path/to/file.epub",
-        {"key": "val"},
-        now,
-    )
+    mock_conn.execute.return_value.fetchone.return_value = {
+        "id": "doc-abc",
+        "title": "Test Title",
+        "format": "epub",
+        "source_path": "/path/to/file.epub",
+        "metadata": {"key": "val"},
+        "created_at": now,
+    }
     doc = get_document("doc-abc", mock_conn)
     assert doc is not None
     assert doc.id == "doc-abc"
@@ -87,20 +79,52 @@ def test_get_document_not_found(mock_conn):
     assert doc is None
 
 
-def test_get_database_url_default():
-    with patch.dict("os.environ", {}, clear=True):
-        # Remove POINTY_DATABASE_URL if set
-        import os
+def test_create_tables():
+    """Verify create_tables executes each DDL statement individually."""
+    mock_conn = MagicMock()
+    with patch("pointy_rag.db.get_connection") as mock_get_conn:
+        mock_get_conn.return_value.__enter__ = lambda _: mock_conn
+        mock_get_conn.return_value.__exit__ = MagicMock(return_value=False)
+        create_tables("postgresql://localhost/test")
 
-        from pointy_rag.db import get_database_url
-        os.environ.pop("POINTY_DATABASE_URL", None)
-        url = get_database_url()
-        assert url == "postgresql://localhost:5432/pointy_rag"
+    calls = mock_conn.execute.call_args_list
+    # First call: CREATE EXTENSION
+    assert "CREATE EXTENSION" in calls[0][0][0]
+    # Remaining calls: individual DDL statements (3 tables + 3 indexes = 6)
+    ddl_calls = calls[1:]
+    assert len(ddl_calls) >= 6
+    # Verify tables
+    ddl_sql = " ".join(c[0][0] for c in ddl_calls)
+    assert "CREATE TABLE IF NOT EXISTS documents" in ddl_sql
+    assert "CREATE TABLE IF NOT EXISTS disclosure_docs" in ddl_sql
+    assert "CREATE TABLE IF NOT EXISTS chunks" in ddl_sql
+    # Verify HNSW index (not IVFFlat)
+    assert "hnsw" in ddl_sql
+    assert "ivfflat" not in ddl_sql
+    # Verify commit
+    mock_conn.commit.assert_called_once()
 
 
-def test_get_database_url_from_env():
-    with patch.dict("os.environ", {"POINTY_DATABASE_URL": "postgresql://myhost:5432/mydb"}):
-        from pointy_rag.db import get_database_url
+def test_split_ddl():
+    """Verify DDL splitting produces correct individual statements."""
+    from pointy_rag.db import DDL
 
-        url = get_database_url()
-        assert url == "postgresql://myhost:5432/mydb"
+    statements = _split_ddl(DDL)
+    assert len(statements) == 6  # 3 tables + 3 indexes
+    for stmt in statements:
+        assert stmt.endswith(";")
+
+
+def test_get_settings_used_for_connection():
+    """Verify get_connection uses get_settings when no URL provided."""
+    with patch("pointy_rag.db.get_settings") as mock_settings, \
+         patch("pointy_rag.db.psycopg.connect") as mock_connect:
+        mock_settings.return_value.database_url = "postgresql://from-settings/db"
+        mock_ctx = MagicMock()
+        mock_connect.return_value.__enter__ = lambda _: mock_ctx
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        with patch("pointy_rag.db.register_vector"):
+            from pointy_rag.db import get_connection
+            with get_connection() as _conn:
+                pass
+        mock_connect.assert_called_once_with("postgresql://from-settings/db")
