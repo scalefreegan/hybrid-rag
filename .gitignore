@@ -10,4 +10,9 @@ __pycache__/
 .venv/
 dist/
 .env
+
+# Gas Town (added by gt)
 .runtime/
+.claude/
+.logs/
+state.json
