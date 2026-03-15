@@ -7,7 +7,7 @@ import psycopg
 import psycopg.rows
 
 from pointy_rag.chunker import split_into_sections
-from pointy_rag.claude_agent import run_disclosure_agent
+from pointy_rag.claude_agent import run_agent
 from pointy_rag.db import (
     delete_disclosure_docs_by_level,
     insert_disclosure_doc,
@@ -18,7 +18,50 @@ from pointy_rag.models import DisclosureDoc, DisclosureLevel
 # Max concurrent agent calls for Level 2 generation.
 _AGENT_CONCURRENCY = 3
 
+# Safety bound: refuse absurdly large text to avoid runaway agent costs.
+MAX_DISCLOSURE_TEXT_LENGTH = 500_000
+
+_LEVEL_INSTRUCTIONS = {
+    0: "Produce a library-wide catalog summarizing all documents.",
+    1: "Produce a resource index (table of contents) for the document.",
+    2: "Produce a concise section summary.",
+}
+
 _log = logging.getLogger(__name__)
+
+
+async def run_disclosure_agent(
+    *,
+    text: str,
+    title: str,
+    level: int,
+    timeout: int | None = None,
+) -> str:
+    """Build a disclosure prompt and call the Claude agent.
+
+    Args:
+        text: Source text to summarize.
+        title: Document or section title.
+        level: Disclosure level (0-2).
+        timeout: Optional wall-clock timeout in seconds.
+
+    Returns:
+        The agent's summary text.
+    """
+    if len(text) > MAX_DISCLOSURE_TEXT_LENGTH:
+        msg = (
+            f"Input text ({len(text)} chars) is too large for disclosure agent "
+            f"(max {MAX_DISCLOSURE_TEXT_LENGTH})"
+        )
+        raise ValueError(msg)
+
+    # Escape closing tags to prevent prompt injection.
+    safe_text = text.replace("</document>", "&lt;/document&gt;")
+    instruction = _LEVEL_INSTRUCTIONS.get(level, "Summarize the following text.")
+
+    prompt = f"{instruction}\n\nTitle: {title}\n\n<document>\n{safe_text}\n</document>"
+
+    return await run_agent(prompt, timeout=timeout)
 
 
 async def generate_disclosure_hierarchy(
@@ -107,33 +150,48 @@ async def generate_disclosure_hierarchy(
 
     # --- Level 1: agent produces resource index from all L2 summaries ---
     combined_l2 = "\n\n".join(f"## {d.title}\n{d.content}" for d in level2_docs)
-    resource_index_text = await run_disclosure_agent(
-        text=combined_l2,
-        title=title,
-        level=1,
-    )
-    level1_doc = DisclosureDoc(
-        document_id=document_id,
-        level=DisclosureLevel.resource_index,
-        title=title,
-        content=resource_index_text,
-        ordering=0,
-    )
+    level1_doc: DisclosureDoc | None = None
+    try:
+        resource_index_text = await run_disclosure_agent(
+            text=combined_l2,
+            title=title,
+            level=1,
+        )
+        level1_doc = DisclosureDoc(
+            document_id=document_id,
+            level=DisclosureLevel.resource_index,
+            title=title,
+            content=resource_index_text,
+            ordering=0,
+        )
+    except Exception:
+        _log.warning(
+            "L1 resource index failed for document %s, persisting L2+L3 only",
+            document_id,
+            exc_info=True,
+        )
 
     # --- Set parent_id links ---
     for l2, l3 in zip(level2_docs, successful_l3_docs, strict=True):
         l3.parent_id = l2.id
-        l2.parent_id = level1_doc.id
+        if level1_doc is not None:
+            l2.parent_id = level1_doc.id
 
     # --- Persist to database ---
-    insert_disclosure_doc(level1_doc, conn)
+    if level1_doc is not None:
+        insert_disclosure_doc(level1_doc, conn)
     for l2 in level2_docs:
         insert_disclosure_doc(l2, conn)
     for l3 in successful_l3_docs:
         insert_disclosure_doc(l3, conn)
     conn.commit()
 
-    return [level1_doc, *level2_docs, *successful_l3_docs]
+    all_docs: list[DisclosureDoc] = []
+    if level1_doc is not None:
+        all_docs.append(level1_doc)
+    all_docs.extend(level2_docs)
+    all_docs.extend(successful_l3_docs)
+    return all_docs
 
 
 async def regenerate_library_catalog(

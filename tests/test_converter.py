@@ -106,10 +106,11 @@ async def test_convert_to_markdown_agent_success(tmp_path):
     pdf_path = _make_minimal_pdf(tmp_path)
     agent_md = "# Agent Output\n\nContent here."
 
-    mock_module = MagicMock()
-    mock_module.run_conversion_agent = AsyncMock(return_value=agent_md)
-
-    with patch.dict("sys.modules", {"pointy_rag.claude_agent": mock_module}):
+    with patch(
+        "pointy_rag.converter.run_conversion_agent",
+        new_callable=AsyncMock,
+        return_value=agent_md,
+    ):
         text, path = await convert_to_markdown(pdf_path, use_agent=True)
 
     assert text == agent_md
@@ -122,17 +123,16 @@ async def test_convert_to_markdown_agent_success_via_mock(tmp_path):
     pdf_path = _make_minimal_pdf(tmp_path)
     agent_md = "# Converted by Agent\n\nSome content."
 
-    mock_agent_module = MagicMock()
-    mock_agent_module.run_conversion_agent = AsyncMock(return_value=agent_md)
-
-    with patch.dict("sys.modules", {"pointy_rag.claude_agent": mock_agent_module}):
+    with patch(
+        "pointy_rag.converter.run_conversion_agent",
+        new_callable=AsyncMock,
+        return_value=agent_md,
+    ) as mock_agent:
         text, path = await convert_to_markdown(pdf_path, use_agent=True)
 
     assert text == agent_md
     assert path is None
-    mock_agent_module.run_conversion_agent.assert_called_once_with(
-        str(pdf_path.resolve())
-    )
+    mock_agent.assert_called_once_with(str(pdf_path.resolve()))
 
 
 # ---------------------------------------------------------------------------

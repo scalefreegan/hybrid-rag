@@ -90,7 +90,6 @@ class TestMapChunksToDisclosure:
                 token_count=10,
                 chunk_index=0,
                 heading="## Introduction",
-                page=None,
             ),
         ]
         result = map_chunks_to_disclosure(chunks, all_docs)
@@ -104,7 +103,6 @@ class TestMapChunksToDisclosure:
                 token_count=10,
                 chunk_index=0,
                 heading="### METHODS",
-                page=None,
             ),
         ]
         result = map_chunks_to_disclosure(chunks, all_docs)
@@ -117,7 +115,6 @@ class TestMapChunksToDisclosure:
                 token_count=10,
                 chunk_index=0,
                 heading=None,
-                page=None,
             ),
         ]
         result = map_chunks_to_disclosure(chunks, all_docs)
@@ -130,7 +127,6 @@ class TestMapChunksToDisclosure:
                 token_count=10,
                 chunk_index=0,
                 heading=None,
-                page=None,
             ),
         ]
         result = map_chunks_to_disclosure(chunks, all_docs)
@@ -144,21 +140,18 @@ class TestMapChunksToDisclosure:
                 token_count=5,
                 chunk_index=0,
                 heading="## Introduction",
-                page=None,
             ),
             TextChunk(
                 content="Method text",
                 token_count=5,
                 chunk_index=1,
                 heading="## Methods",
-                page=None,
             ),
             TextChunk(
                 content="Result text",
                 token_count=5,
                 chunk_index=2,
                 heading="## Results",
-                page=None,
             ),
         ]
         result = map_chunks_to_disclosure(chunks, all_docs)
@@ -184,7 +177,6 @@ class TestMapChunksToDisclosure:
                 token_count=5,
                 chunk_index=0,
                 heading=None,
-                page=None,
             ),
         ]
         with pytest.raises(ValueError, match="No Level 3"):
@@ -197,7 +189,6 @@ class TestMapChunksToDisclosure:
                 token_count=5,
                 chunk_index=0,
                 heading="## Introduction",
-                page=None,
             ),
         ]
         result = map_chunks_to_disclosure(chunks, all_docs)
