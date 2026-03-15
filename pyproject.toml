@@ -12,6 +12,9 @@ dependencies = [
     "psycopg[binary]>=3.1.0",
     "pgvector>=0.3.0",
     "voyageai>=0.3.0",
+    "pymupdf>=1.24.0",
+    "ebooklib>=0.18",
+    "beautifulsoup4>=4.12.0",
 ]
 
 [project.scripts]
