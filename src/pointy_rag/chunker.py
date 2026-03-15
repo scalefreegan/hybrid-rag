@@ -12,7 +12,6 @@ class TextChunk:
     token_count: int
     chunk_index: int
     heading: str | None  # The markdown heading this chunk falls under
-    page: int | None  # Page number if available (from converter metadata)
 
 
 def count_tokens(text: str) -> int:
@@ -82,7 +81,6 @@ def _split_body_with_overlap(
                     token_count=count_tokens(content),
                     chunk_index=chunk_index,
                     heading=heading,
-                    page=None,
                 )
             )
             chunk_index += 1
@@ -113,7 +111,6 @@ def _split_body_with_overlap(
                 token_count=count_tokens(content),
                 chunk_index=chunk_index,
                 heading=heading,
-                page=None,
             )
         )
 
@@ -162,7 +159,6 @@ def chunk_markdown(
                     token_count=body_tokens,
                     chunk_index=chunk_index,
                     heading=heading,
-                    page=None,
                 )
             )
             chunk_index += 1

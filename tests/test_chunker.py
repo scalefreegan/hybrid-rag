@@ -41,7 +41,6 @@ def test_single_small_section():
     assert chunk.heading == "## Introduction"
     assert "short intro" in chunk.content
     assert chunk.chunk_index == 0
-    assert chunk.page is None
 
 
 def test_multiple_headings():
