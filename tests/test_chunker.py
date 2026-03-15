@@ -1,6 +1,5 @@
 """Tests for the markdown-aware chunker."""
 
-
 from pointy_rag.chunker import TextChunk, chunk_markdown, count_tokens
 
 # ---------------------------------------------------------------------------

@@ -46,8 +46,7 @@ def map_chunks_to_disclosure(
         Chunk model instances with disclosure_doc_id set, embedding=None.
     """
     level3_docs = [
-        d for d in disclosure_docs
-        if d.level == DisclosureLevel.detailed_passage
+        d for d in disclosure_docs if d.level == DisclosureLevel.detailed_passage
     ]
 
     if not level3_docs:

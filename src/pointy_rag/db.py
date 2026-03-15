@@ -136,11 +136,15 @@ def insert_chunk(chunk: Chunk, conn: psycopg.Connection) -> None:
 
 
 def get_document(doc_id: str, conn: psycopg.Connection) -> Document | None:
-    row = conn.cursor(row_factory=psycopg.rows.dict_row).execute(
-        "SELECT id, title, format, source_path, metadata, created_at"
-        " FROM documents WHERE id = %s",
-        (doc_id,),
-    ).fetchone()
+    row = (
+        conn.cursor(row_factory=psycopg.rows.dict_row)
+        .execute(
+            "SELECT id, title, format, source_path, metadata, created_at"
+            " FROM documents WHERE id = %s",
+            (doc_id,),
+        )
+        .fetchone()
+    )
     if row is None:
         return None
     return Document(
@@ -153,14 +157,16 @@ def get_document(doc_id: str, conn: psycopg.Connection) -> Document | None:
     )
 
 
-def get_disclosure_doc(
-    ddoc_id: str, conn: psycopg.Connection
-) -> DisclosureDoc | None:
-    row = conn.cursor(row_factory=psycopg.rows.dict_row).execute(
-        "SELECT id, document_id, parent_id, level, title, content, ordering"
-        " FROM disclosure_docs WHERE id = %s",
-        (ddoc_id,),
-    ).fetchone()
+def get_disclosure_doc(ddoc_id: str, conn: psycopg.Connection) -> DisclosureDoc | None:
+    row = (
+        conn.cursor(row_factory=psycopg.rows.dict_row)
+        .execute(
+            "SELECT id, document_id, parent_id, level, title, content, ordering"
+            " FROM disclosure_docs WHERE id = %s",
+            (ddoc_id,),
+        )
+        .fetchone()
+    )
     if row is None:
         return None
     return DisclosureDoc(
@@ -180,19 +186,27 @@ def get_disclosure_docs_by_document(
     level: int | None = None,
 ) -> list[DisclosureDoc]:
     if level is not None:
-        rows = conn.cursor(row_factory=psycopg.rows.dict_row).execute(
-            "SELECT id, document_id, parent_id, level, title, content, ordering"
-            " FROM disclosure_docs WHERE document_id = %s AND level = %s"
-            " ORDER BY ordering",
-            (doc_id, level),
-        ).fetchall()
+        rows = (
+            conn.cursor(row_factory=psycopg.rows.dict_row)
+            .execute(
+                "SELECT id, document_id, parent_id, level, title, content, ordering"
+                " FROM disclosure_docs WHERE document_id = %s AND level = %s"
+                " ORDER BY ordering",
+                (doc_id, level),
+            )
+            .fetchall()
+        )
     else:
-        rows = conn.cursor(row_factory=psycopg.rows.dict_row).execute(
-            "SELECT id, document_id, parent_id, level, title, content, ordering"
-            " FROM disclosure_docs WHERE document_id = %s"
-            " ORDER BY level, ordering",
-            (doc_id,),
-        ).fetchall()
+        rows = (
+            conn.cursor(row_factory=psycopg.rows.dict_row)
+            .execute(
+                "SELECT id, document_id, parent_id, level, title, content, ordering"
+                " FROM disclosure_docs WHERE document_id = %s"
+                " ORDER BY level, ordering",
+                (doc_id,),
+            )
+            .fetchall()
+        )
     return [
         DisclosureDoc(
             id=r["id"],
@@ -207,9 +221,7 @@ def get_disclosure_docs_by_document(
     ]
 
 
-def delete_disclosure_docs_by_level(
-    level: int, conn: psycopg.Connection
-) -> int:
+def delete_disclosure_docs_by_level(level: int, conn: psycopg.Connection) -> int:
     """Delete all disclosure docs at a given level. Returns count deleted."""
     cursor = conn.execute(
         "DELETE FROM disclosure_docs WHERE level = %s",
@@ -231,11 +243,15 @@ def get_document_by_source_path(
     source_path: str, conn: psycopg.Connection
 ) -> Document | None:
     """Look up a document by its source_path (for re-ingestion detection)."""
-    row = conn.cursor(row_factory=psycopg.rows.dict_row).execute(
-        "SELECT id, title, format, source_path, metadata, created_at"
-        " FROM documents WHERE source_path = %s",
-        (source_path,),
-    ).fetchone()
+    row = (
+        conn.cursor(row_factory=psycopg.rows.dict_row)
+        .execute(
+            "SELECT id, title, format, source_path, metadata, created_at"
+            " FROM documents WHERE source_path = %s",
+            (source_path,),
+        )
+        .fetchone()
+    )
     if row is None:
         return None
     return Document(
@@ -254,18 +270,24 @@ def delete_document_data(doc_id: str, conn: psycopg.Connection) -> None:
     Deletion order respects FK constraints:
     chunks -> disclosure_docs (clear parent_ids first) -> disclosure_docs -> document.
     """
-    conn.execute("DELETE FROM chunks WHERE disclosure_doc_id IN "
-                 "(SELECT id FROM disclosure_docs WHERE document_id = %s)", (doc_id,))
-    conn.execute("UPDATE disclosure_docs SET parent_id = NULL "
-                 "WHERE document_id = %s", (doc_id,))
+    conn.execute(
+        "DELETE FROM chunks WHERE disclosure_doc_id IN "
+        "(SELECT id FROM disclosure_docs WHERE document_id = %s)",
+        (doc_id,),
+    )
+    conn.execute(
+        "UPDATE disclosure_docs SET parent_id = NULL WHERE document_id = %s", (doc_id,)
+    )
     conn.execute("DELETE FROM disclosure_docs WHERE document_id = %s", (doc_id,))
     conn.execute("DELETE FROM documents WHERE id = %s", (doc_id,))
 
 
 def list_documents(conn: psycopg.Connection) -> list[dict]:
     """List all ingested documents with chunk counts."""
-    return conn.cursor(row_factory=psycopg.rows.dict_row).execute(
-        """
+    return (
+        conn.cursor(row_factory=psycopg.rows.dict_row)
+        .execute(
+            """
         SELECT d.id, d.title, d.format, d.source_path, d.created_at,
                COUNT(DISTINCT dd.id) AS disclosure_count,
                COUNT(DISTINCT c.id) AS chunk_count
@@ -275,4 +297,6 @@ def list_documents(conn: psycopg.Connection) -> list[dict]:
         GROUP BY d.id, d.title, d.format, d.source_path, d.created_at
         ORDER BY d.created_at DESC
         """,
-    ).fetchall()
+        )
+        .fetchall()
+    )

@@ -34,20 +34,25 @@ class TestIngestDocument:
     @patch("pointy_rag.ingest.insert_document")
     @patch("pointy_rag.ingest.insert_chunk")
     async def test_ingest_no_agent(
-        self, mock_insert_chunk, mock_insert_doc,
-        mock_get_existing, mock_detect, mock_convert, mock_embed,
-        mock_conn, tmp_pdf,
+        self,
+        mock_insert_chunk,
+        mock_insert_doc,
+        mock_get_existing,
+        mock_detect,
+        mock_convert,
+        mock_embed,
+        mock_conn,
+        tmp_pdf,
     ):
         mock_detect.return_value = DocumentFormat.pdf
         mock_convert.return_value = (
-            "## Introduction\nSome content here for testing.", None
+            "## Introduction\nSome content here for testing.",
+            None,
         )
         mock_embed.return_value = [[0.1] * 1024]
         mock_get_existing.return_value = None
 
-        doc = await ingest_document(
-            tmp_pdf, mock_conn, use_agent=False
-        )
+        doc = await ingest_document(tmp_pdf, mock_conn, use_agent=False)
 
         assert doc.title == "test"
         assert doc.format == DocumentFormat.pdf
@@ -64,9 +69,16 @@ class TestIngestDocument:
     @patch("pointy_rag.ingest.insert_chunk")
     @patch("pointy_rag.ingest.delete_document_data")
     async def test_re_ingestion_deletes_existing(
-        self, mock_delete, mock_insert_chunk, mock_insert_doc,
-        mock_get_existing, mock_detect, mock_convert, mock_embed,
-        mock_conn, tmp_pdf,
+        self,
+        mock_delete,
+        mock_insert_chunk,
+        mock_insert_doc,
+        mock_get_existing,
+        mock_detect,
+        mock_convert,
+        mock_embed,
+        mock_conn,
+        tmp_pdf,
     ):
         from pointy_rag.models import Document
 
@@ -94,9 +106,15 @@ class TestIngestDocument:
     @patch("pointy_rag.ingest.insert_document")
     @patch("pointy_rag.ingest.insert_chunk")
     async def test_empty_chunks_raises(
-        self, mock_insert_chunk, mock_insert_doc,
-        mock_get_existing, mock_detect, mock_convert, mock_embed,
-        mock_conn, tmp_pdf,
+        self,
+        mock_insert_chunk,
+        mock_insert_doc,
+        mock_get_existing,
+        mock_detect,
+        mock_convert,
+        mock_embed,
+        mock_conn,
+        tmp_pdf,
     ):
         mock_detect.return_value = DocumentFormat.pdf
         mock_convert.return_value = ("", None)  # empty markdown
@@ -117,9 +135,16 @@ class TestIngestDocument:
         new_callable=AsyncMock,
     )
     async def test_disclosure_failure_stores_chunks_anyway(
-        self, mock_disclosure, mock_insert_chunk, mock_insert_doc,
-        mock_get_existing, mock_detect, mock_convert, mock_embed,
-        mock_conn, tmp_pdf,
+        self,
+        mock_disclosure,
+        mock_insert_chunk,
+        mock_insert_doc,
+        mock_get_existing,
+        mock_detect,
+        mock_convert,
+        mock_embed,
+        mock_conn,
+        tmp_pdf,
     ):
         mock_detect.return_value = DocumentFormat.pdf
         mock_convert.return_value = ("## Section\nContent.", None)
@@ -160,9 +185,7 @@ class TestIngestPaths:
     async def test_all_succeed(self, mock_ingest, mock_conn):
         from pointy_rag.models import Document
 
-        doc = Document(
-            title="doc", format=DocumentFormat.pdf, source_path="/doc.pdf"
-        )
+        doc = Document(title="doc", format=DocumentFormat.pdf, source_path="/doc.pdf")
         mock_ingest.return_value = doc
 
         paths = [Path("/a.pdf"), Path("/b.pdf")]
@@ -191,9 +214,15 @@ class TestDbFunctions:
         cursor = MagicMock()
         cursor.execute.return_value = cursor
         cursor.fetchall.return_value = [
-            {"id": "d1", "title": "Test", "format": "pdf",
-             "source_path": "/test.pdf", "created_at": None,
-             "disclosure_count": 5, "chunk_count": 10},
+            {
+                "id": "d1",
+                "title": "Test",
+                "format": "pdf",
+                "source_path": "/test.pdf",
+                "created_at": None,
+                "disclosure_count": 5,
+                "chunk_count": 10,
+            },
         ]
         conn.cursor.return_value = cursor
 

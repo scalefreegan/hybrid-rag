@@ -210,10 +210,13 @@ async def test_run_disclosure_agent_text_too_large():
 @pytest.mark.asyncio
 async def test_run_agent_claude_not_found():
     """Raise FileNotFoundError with helpful message when claude CLI is missing."""
-    with patch(
-        "asyncio.create_subprocess_exec",
-        AsyncMock(side_effect=FileNotFoundError("No such file")),
-    ), pytest.raises(FileNotFoundError, match="Claude CLI not found"):
+    with (
+        patch(
+            "asyncio.create_subprocess_exec",
+            AsyncMock(side_effect=FileNotFoundError("No such file")),
+        ),
+        pytest.raises(FileNotFoundError, match="Claude CLI not found"),
+    ):
         await run_agent("Do something")
 
 

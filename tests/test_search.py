@@ -149,12 +149,18 @@ class TestGetChildren:
         cursor.execute.return_value = cursor
         cursor.fetchall.return_value = [
             {
-                "id": "c1", "title": "Child 1",
-                "level": 3, "ordering": 0, "document_id": "doc1",
+                "id": "c1",
+                "title": "Child 1",
+                "level": 3,
+                "ordering": 0,
+                "document_id": "doc1",
             },
             {
-                "id": "c2", "title": "Child 2",
-                "level": 3, "ordering": 1, "document_id": "doc1",
+                "id": "c2",
+                "title": "Child 2",
+                "level": 3,
+                "ordering": 1,
+                "document_id": "doc1",
             },
         ]
         mock_conn.cursor.return_value = cursor

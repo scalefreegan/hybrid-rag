@@ -122,14 +122,17 @@ def test_split_ddl():
 
 def test_get_settings_used_for_connection():
     """Verify get_connection uses get_settings when no URL provided."""
-    with patch("pointy_rag.db.get_settings") as mock_settings, \
-         patch("pointy_rag.db.psycopg.connect") as mock_connect:
+    with (
+        patch("pointy_rag.db.get_settings") as mock_settings,
+        patch("pointy_rag.db.psycopg.connect") as mock_connect,
+    ):
         mock_settings.return_value.database_url = "postgresql://from-settings/db"
         mock_ctx = MagicMock()
         mock_connect.return_value.__enter__ = lambda _: mock_ctx
         mock_connect.return_value.__exit__ = MagicMock(return_value=False)
         with patch("pointy_rag.db.register_vector"):
             from pointy_rag.db import get_connection
+
             with get_connection() as _conn:
                 pass
         mock_connect.assert_called_once_with("postgresql://from-settings/db")

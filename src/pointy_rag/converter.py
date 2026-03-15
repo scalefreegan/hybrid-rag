@@ -66,9 +66,7 @@ def _validate_path(path: Path) -> Path:
     """
     resolved = path.resolve()
     if not resolved.is_file():
-        raise FileNotFoundError(
-            f"Document not found (expected a file): {path}"
-        )
+        raise FileNotFoundError(f"Document not found (expected a file): {path}")
     size = resolved.stat().st_size
     if size == 0:
         raise ValueError(f"File is empty (0 bytes): {path.name}")

@@ -83,9 +83,7 @@ async def run_agent(
 
     if proc.returncode != 0:
         err = stderr.decode("utf-8", errors="replace").strip()
-        raise RuntimeError(
-            f"Claude agent exited with code {proc.returncode}: {err}"
-        )
+        raise RuntimeError(f"Claude agent exited with code {proc.returncode}: {err}")
 
     raw = stdout.decode("utf-8", errors="replace").strip()
     try:

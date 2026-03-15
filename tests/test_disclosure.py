@@ -147,9 +147,7 @@ class TestGenerateDisclosureHierarchy:
     @pytest.mark.asyncio
     @patch("pointy_rag.disclosure.run_disclosure_agent", new_callable=AsyncMock)
     @patch("pointy_rag.disclosure.insert_disclosure_doc")
-    async def test_single_section_document(
-        self, mock_insert, mock_agent, mock_conn
-    ):
+    async def test_single_section_document(self, mock_insert, mock_agent, mock_conn):
         markdown = "## Only Section\nJust one section here."
         mock_agent.return_value = "Summary"
 
@@ -251,29 +249,21 @@ class TestGenerateDisclosureHierarchy:
         result = await generate_disclosure_hierarchy(
             "doc1", markdown, "Test", mock_conn
         )
-        l3 = [
-            d for d in result
-            if d.level == DisclosureLevel.detailed_passage
-        ]
+        l3 = [d for d in result if d.level == DisclosureLevel.detailed_passage]
         # Should get a fallback title, not an empty string.
         assert all(len(d.title) > 0 for d in l3)
 
     @pytest.mark.asyncio
     @patch("pointy_rag.disclosure.run_disclosure_agent", new_callable=AsyncMock)
     @patch("pointy_rag.disclosure.insert_disclosure_doc")
-    async def test_no_headings_uses_full_text(
-        self, mock_insert, mock_agent, mock_conn
-    ):
+    async def test_no_headings_uses_full_text(self, mock_insert, mock_agent, mock_conn):
         markdown = "Plain text with no headings at all."
         mock_agent.return_value = "Summary"
 
         result = await generate_disclosure_hierarchy(
             "doc1", markdown, "No Headings", mock_conn
         )
-        l3 = [
-            d for d in result
-            if d.level == DisclosureLevel.detailed_passage
-        ]
+        l3 = [d for d in result if d.level == DisclosureLevel.detailed_passage]
         assert len(l3) == 1
         assert "Plain text" in l3[0].content
 
@@ -343,8 +333,5 @@ class TestRegenerateLibraryCatalog:
         # Verify L1 parent_ids cleared before L0 delete (FK safety).
         # The conn.execute call clears parents before delete.
         execute_calls = mock_conn.execute.call_args_list
-        clear_call = [
-            c for c in execute_calls
-            if "SET parent_id = NULL" in str(c)
-        ]
+        clear_call = [c for c in execute_calls if "SET parent_id = NULL" in str(c)]
         assert len(clear_call) >= 1

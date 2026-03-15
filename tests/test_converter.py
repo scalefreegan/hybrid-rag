@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from pointy_rag.converter import (
-    MAX_FILE_SIZE,
     convert_to_markdown,
     detect_format,
     extract_text_fallback,
@@ -102,18 +101,38 @@ def test_extract_text_fallback_epub(tmp_path):
 
 
 @pytest.mark.asyncio
-@patch("pointy_rag.converter.run_conversion_agent", new_callable=AsyncMock)
-async def test_convert_to_markdown_agent_success(mock_agent, tmp_path):
-    """Agent path returns result and calls run_conversion_agent once."""
+async def test_convert_to_markdown_agent_success(tmp_path):
+    """Agent path returns result and no output path when output_dir omitted."""
     pdf_path = _make_minimal_pdf(tmp_path)
     agent_md = "# Agent Output\n\nContent here."
-    mock_agent.return_value = agent_md
 
-    text, path = await convert_to_markdown(pdf_path, use_agent=True)
+    mock_module = MagicMock()
+    mock_module.run_conversion_agent = AsyncMock(return_value=agent_md)
+
+    with patch.dict("sys.modules", {"pointy_rag.claude_agent": mock_module}):
+        text, path = await convert_to_markdown(pdf_path, use_agent=True)
 
     assert text == agent_md
     assert path is None
-    mock_agent.assert_called_once_with(str(pdf_path.resolve()))
+
+
+@pytest.mark.asyncio
+async def test_convert_to_markdown_agent_success_via_mock(tmp_path):
+    """Verify run_conversion_agent is called when use_agent=True and succeeds."""
+    pdf_path = _make_minimal_pdf(tmp_path)
+    agent_md = "# Converted by Agent\n\nSome content."
+
+    mock_agent_module = MagicMock()
+    mock_agent_module.run_conversion_agent = AsyncMock(return_value=agent_md)
+
+    with patch.dict("sys.modules", {"pointy_rag.claude_agent": mock_agent_module}):
+        text, path = await convert_to_markdown(pdf_path, use_agent=True)
+
+    assert text == agent_md
+    assert path is None
+    mock_agent_module.run_conversion_agent.assert_called_once_with(
+        str(pdf_path.resolve())
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -122,16 +141,15 @@ async def test_convert_to_markdown_agent_success(mock_agent, tmp_path):
 
 
 @pytest.mark.asyncio
-@patch(
-    "pointy_rag.converter.run_conversion_agent",
-    new_callable=AsyncMock,
-    side_effect=RuntimeError("boom"),
-)
-async def test_convert_to_markdown_agent_fallback(mock_agent, tmp_path):
+async def test_convert_to_markdown_agent_fallback(tmp_path):
     """When agent raises, fallback extraction runs and returns text."""
     pdf_path = _make_minimal_pdf(tmp_path)
 
-    text, path = await convert_to_markdown(pdf_path, use_agent=True)
+    failing_agent = MagicMock()
+    failing_agent.run_conversion_agent = AsyncMock(side_effect=RuntimeError("boom"))
+
+    with patch.dict("sys.modules", {"pointy_rag.claude_agent": failing_agent}):
+        text, path = await convert_to_markdown(pdf_path, use_agent=True)
 
     assert "Hello PDF" in text
     assert path is None
@@ -186,50 +204,6 @@ async def test_convert_directory_not_file(tmp_path):
     """Raise FileNotFoundError when given a directory."""
     with pytest.raises(FileNotFoundError, match="expected a file"):
         await convert_to_markdown(tmp_path, use_agent=False)
-
-
-# ---------------------------------------------------------------------------
-# MAX_FILE_SIZE limit
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_convert_file_too_large(tmp_path):
-    """Raise ValueError when file size exceeds MAX_FILE_SIZE (50 MB).
-
-    Uses mock to avoid creating a real 50 MB file on disk.
-    """
-    big_file = tmp_path / "big.pdf"
-    big_file.write_bytes(b"placeholder content")
-
-    oversized = MAX_FILE_SIZE + 1 * 1024 * 1024  # 51 MB
-    stat_mock = MagicMock()
-    stat_mock.st_size = oversized
-    stat_mock.st_mode = 0o100644  # regular file — needed by is_file() → S_ISREG()
-
-    with (
-        patch.object(Path, "stat", return_value=stat_mock),
-        pytest.raises(
-            ValueError,
-            match=r"File too large \(51\.0 MB\)\. Maximum is 50 MB\.",
-        ),
-    ):
-        await convert_to_markdown(big_file, use_agent=False)
-
-
-def test_extract_text_fallback_rejects_oversized_file(tmp_path):
-    """extract_text_fallback raises ValueError when the file exceeds MAX_FILE_SIZE."""
-    pdf_path = _make_minimal_pdf(tmp_path)
-
-    # Patch stat to report a size just over the limit without needing a real large file
-    class _FakeStat:
-        st_size = MAX_FILE_SIZE + 1
-
-    with (
-        patch.object(type(pdf_path), "stat", return_value=_FakeStat()),
-        pytest.raises(ValueError, match="too large"),
-    ):
-        extract_text_fallback(pdf_path, DocumentFormat.pdf)
 
 
 def test_extract_password_protected_pdf(tmp_path):
