@@ -1,5 +1,9 @@
 """Typer CLI for pointy-rag."""
 
+import importlib.resources
+import json
+import shutil
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlparse, urlunparse
@@ -76,18 +80,18 @@ def ingest(
     from pointy_rag.ingest import ingest_paths
 
     with Progress(
-        SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
         console=console,
     ) as progress:
-        task = progress.add_task(
-            f"Ingesting {len(paths)} file(s)...", total=None
-        )
+        task = progress.add_task(f"Ingesting {len(paths)} file(s)...", total=None)
 
         try:
             with get_connection() as conn:
                 succeeded, failed = asyncio.run(
                     ingest_paths(
-                        paths, conn,
+                        paths,
+                        conn,
                         output_dir=output_dir,
                         use_agent=not no_agent,
                     )
@@ -104,9 +108,7 @@ def ingest(
     for path, exc in failed:
         console.print(f"[bold red]\u2717[/] {path.name}: {exc}")
 
-    console.print(
-        f"\n[bold]{len(succeeded)} succeeded, {len(failed)} failed[/]"
-    )
+    console.print(f"\n[bold]{len(succeeded)} succeeded, {len(failed)} failed[/]")
     if failed:
         raise typer.Exit(code=1)
 
@@ -140,13 +142,12 @@ def search(
 
     try:
         with get_connection() as conn:
-            results = do_search(
-                query, conn, limit=limit, threshold=threshold
-            )
+            results = do_search(query, conn, limit=limit, threshold=threshold)
 
             if level is not None:
                 results = [
-                    r for r in results
+                    r
+                    for r in results
                     if r.disclosure_doc and r.disclosure_doc.level == level
                 ]
 
@@ -155,10 +156,7 @@ def search(
                 return
 
             # Batch-fetch children counts in one query.
-            ddoc_ids = [
-                r.disclosure_doc.id
-                for r in results if r.disclosure_doc
-            ]
+            ddoc_ids = [r.disclosure_doc.id for r in results if r.disclosure_doc]
             children_counts = batch_children_counts(ddoc_ids, conn)
 
             table = Table(title=f"Search: {query!r}")
@@ -171,16 +169,11 @@ def search(
                 table.add_column("Content", max_width=60)
 
             for r in results:
-                doc_title = (
-                    r.document.title if r.document else "\u2014"
-                )
+                doc_title = r.document.title if r.document else "\u2014"
                 ddoc = r.disclosure_doc
                 ddoc_title = ddoc.title if ddoc else "\u2014"
                 ddoc_level = str(ddoc.level) if ddoc else "\u2014"
-                children_count = (
-                    children_counts.get(ddoc.id, 0)
-                    if ddoc else 0
-                )
+                children_count = children_counts.get(ddoc.id, 0) if ddoc else 0
                 row = [
                     f"{r.score:.3f}",
                     doc_title,
@@ -190,10 +183,7 @@ def search(
                 ]
                 if content:
                     text = r.chunk.content
-                    snippet = (
-                        text[:200] + "..."
-                        if len(text) > 200 else text
-                    )
+                    snippet = text[:200] + "..." if len(text) > 200 else text
                     row.append(snippet)
                 table.add_row(*row)
 
@@ -223,9 +213,7 @@ def drill(
         with get_connection() as conn:
             doc_content = get_disclosure_content(doc_id, conn)
             if doc_content is None:
-                console.print(
-                    f"[bold red]Error:[/] Doc {doc_id!r} not found."
-                )
+                console.print(f"[bold red]Error:[/] Doc {doc_id!r} not found.")
                 raise typer.Exit(code=1)
 
             breadcrumbs = get_parent_chain(doc_id, conn)
@@ -236,9 +224,7 @@ def drill(
                 trail = " > ".join(d.title for d in breadcrumbs)
                 console.print(f"[dim]{trail}[/]")
 
-            console.print(
-                Panel(doc_content, title="Content", border_style="green")
-            )
+            console.print(Panel(doc_content, title="Content", border_style="green"))
 
             if children:
                 table = Table(title="Children")
@@ -255,14 +241,8 @@ def drill(
                         child["title"],
                     ]
                     if content:
-                        cc = get_disclosure_content(
-                            child["id"], conn
-                        ) or ""
-                        snippet = (
-                            cc[:200] + "..."
-                            if len(cc) > 200
-                            else cc
-                        )
+                        cc = get_disclosure_content(child["id"], conn) or ""
+                        snippet = cc[:200] + "..." if len(cc) > 200 else cc
                         row.append(snippet)
                     table.add_row(*row)
 
@@ -315,6 +295,87 @@ def ls():
     except Exception as exc:
         console.print(f"[bold red]Error:[/] {exc}")
         raise typer.Exit(code=1) from exc
+
+
+def _parse_skill_frontmatter(text: str) -> dict[str, str]:
+    """Extract name and description from YAML frontmatter (no PyYAML dep)."""
+    meta: dict[str, str] = {}
+    if not text.startswith("---"):
+        return meta
+    end = text.find("---", 3)
+    if end == -1:
+        return meta
+    for line in text[3:end].strip().splitlines():
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        meta[key.strip()] = value.strip().strip('"').strip("'")
+    return meta
+
+
+@app.command("install-skill")
+def install_skill(
+    global_: Annotated[
+        bool,
+        typer.Option(
+            "--global",
+            "-g",
+            help="Install to ~/.<agent>/skills/ instead of local",
+        ),
+    ] = False,
+    agent: Annotated[
+        str,
+        typer.Option(
+            "--agent",
+            "-a",
+            help="Target agent (claude, cursor, windsurf, etc.)",
+        ),
+    ] = "claude",
+):
+    """Install the pointy-rag Claude Code skill."""
+    # 1. Locate bundled SKILL.md
+    skill_pkg = importlib.resources.files("pointy_rag._skill")
+    skill_src = skill_pkg / "SKILL.md"
+
+    # 2. Parse frontmatter for metadata
+    skill_text = skill_src.read_text(encoding="utf-8")
+    meta = _parse_skill_frontmatter(skill_text)
+    skill_name = meta.get("name", "pointy-rag")
+    skill_desc = meta.get("description", "")
+
+    # 3. Determine target directory
+    if global_:
+        base = Path.home() / f".{agent}" / "skills"
+    else:
+        base = Path(f".{agent}") / "skills"
+
+    target_dir = base / "pointy-rag"
+    target_file = target_dir / "SKILL.md"
+
+    # 4. Copy SKILL.md
+    target_dir.mkdir(parents=True, exist_ok=True)
+    with importlib.resources.as_file(skill_src) as src_path:
+        shutil.copy2(src_path, target_file)
+
+    # 5. Upsert manifest
+    manifest_path = base / ".skill-manager-manifest.json"
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    else:
+        manifest = {"version": "1.0", "skills": {}}
+
+    manifest["skills"][skill_name] = {
+        "name": skill_name,
+        "path": str(target_dir.resolve()),
+        "description": skill_desc,
+        "composed_from": [],
+        "installed_at": datetime.now(UTC).isoformat(),
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    console.print(
+        f"[bold green]\u2713[/] Installed [bold]{skill_name}[/] skill to {target_dir}"
+    )
 
 
 def main():

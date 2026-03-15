@@ -99,5 +99,3 @@ async def run_agent(
         # Guard against null/non-string result field.
         return result_val if isinstance(result_val, str) else raw
     return raw
-
-

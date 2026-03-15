@@ -93,6 +93,7 @@ uv run pointy-rag drill <disclosure-doc-id>
 | `search` | Semantic search with pointer-based results | `--limit`, `--threshold`, `--level`, `--content` |
 | `drill` | Drill into a disclosure doc and view its children | `--content` |
 | `ls` | List all ingested documents with chunk/disclosure counts | |
+| `install-skill` | Install the Claude Code skill for interactive guidance | `--global`, `--agent` |
 
 Run `uv run pointy-rag <command> --help` for full flag documentation.
 
@@ -135,7 +136,20 @@ When using `--no-agent`, chunks are stored with a placeholder disclosure doc and
 
 ## Claude Code Skill
 
-This repo ships a [Claude Code skill](https://code.claude.com/docs/en/skills) so Claude can guide you through CLI usage interactively. Install it with the [skills CLI](https://github.com/vercel-labs/skills):
+This repo ships a [Claude Code skill](https://code.claude.com/docs/en/skills) so Claude can guide you through CLI usage interactively. Install it with the built-in command:
+
+```bash
+# Install to current project (default)
+pointy-rag install-skill
+
+# Install globally
+pointy-rag install-skill --global
+
+# Install for a different agent (cursor, windsurf, etc.)
+pointy-rag install-skill --agent cursor
+```
+
+Or with the [skills CLI](https://github.com/vercel-labs/skills) (requires Node.js):
 
 ```bash
 npx skills add scalefreegan/hybrid-rag --skill pointy-rag
