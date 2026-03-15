@@ -171,6 +171,48 @@ class TestGenerateDisclosureHierarchy:
     @pytest.mark.asyncio
     @patch("pointy_rag.disclosure.run_disclosure_agent", new_callable=AsyncMock)
     @patch("pointy_rag.disclosure.insert_disclosure_doc")
+    async def test_partial_l2_failure_skips_failed_sections(
+        self, mock_insert, mock_agent, mock_conn, sample_markdown
+    ):
+        """One section failing should not lose the other sections."""
+        # First L2 call fails, second and third succeed, L1 call succeeds.
+        mock_agent.side_effect = [
+            RuntimeError("agent timeout"),
+            "Summary B",
+            "Summary C",
+            "Resource index",
+        ]
+
+        result = await generate_disclosure_hierarchy(
+            "doc1", sample_markdown, "Test Doc", mock_conn
+        )
+
+        # 1 L1 + 2 L2 + 2 L3 (failed section excluded entirely)
+        assert len(result) == 5
+        levels = [d.level for d in result]
+        assert levels.count(DisclosureLevel.resource_index) == 1
+        assert levels.count(DisclosureLevel.section_summary) == 2
+        assert levels.count(DisclosureLevel.detailed_passage) == 2
+
+    @pytest.mark.asyncio
+    @patch("pointy_rag.disclosure.run_disclosure_agent", new_callable=AsyncMock)
+    @patch("pointy_rag.disclosure.insert_disclosure_doc")
+    async def test_all_l2_failures_returns_empty(
+        self, mock_insert, mock_agent, mock_conn, sample_markdown
+    ):
+        """If every L2 section fails, return empty list without raising."""
+        mock_agent.side_effect = RuntimeError("persistent failure")
+
+        result = await generate_disclosure_hierarchy(
+            "doc1", sample_markdown, "Test Doc", mock_conn
+        )
+
+        assert result == []
+        mock_conn.commit.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("pointy_rag.disclosure.run_disclosure_agent", new_callable=AsyncMock)
+    @patch("pointy_rag.disclosure.insert_disclosure_doc")
     async def test_heading_only_hash_gets_default_title(
         self, mock_insert, mock_agent, mock_conn
     ):

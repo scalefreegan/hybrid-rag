@@ -1,6 +1,7 @@
 """Progressive disclosure hierarchy generator for pointy-rag."""
 
 import asyncio
+import logging
 
 import psycopg
 import psycopg.rows
@@ -16,6 +17,8 @@ from pointy_rag.models import DisclosureDoc, DisclosureLevel
 
 # Max concurrent agent calls for Level 2 generation.
 _AGENT_CONCURRENCY = 3
+
+_log = logging.getLogger(__name__)
 
 
 async def generate_disclosure_hierarchy(
@@ -82,10 +85,27 @@ async def generate_disclosure_hierarchy(
             ordering=l3.ordering,
         )
 
-    level2_docs = await asyncio.gather(
-        *[_summarize_section(l3) for l3 in level3_docs]
+    gather_results = await asyncio.gather(
+        *[_summarize_section(l3) for l3 in level3_docs],
+        return_exceptions=True,
     )
-    level2_docs = list(level2_docs)
+
+    level2_docs: list[DisclosureDoc] = []
+    successful_l3_docs: list[DisclosureDoc] = []
+    for l3, result in zip(level3_docs, gather_results):
+        if isinstance(result, BaseException):
+            _log.warning(
+                "L2 summary failed for section %r in document %s, skipping: %s",
+                l3.title,
+                document_id,
+                result,
+            )
+        else:
+            level2_docs.append(result)
+            successful_l3_docs.append(l3)
+
+    if not level2_docs:
+        return []
 
     # --- Level 1: agent produces resource index from all L2 summaries ---
     combined_l2 = "\n\n".join(
@@ -105,7 +125,7 @@ async def generate_disclosure_hierarchy(
     )
 
     # --- Set parent_id links ---
-    for l2, l3 in zip(level2_docs, level3_docs, strict=True):
+    for l2, l3 in zip(level2_docs, successful_l3_docs, strict=True):
         l3.parent_id = l2.id
         l2.parent_id = level1_doc.id
 
@@ -113,11 +133,11 @@ async def generate_disclosure_hierarchy(
     insert_disclosure_doc(level1_doc, conn)
     for l2 in level2_docs:
         insert_disclosure_doc(l2, conn)
-    for l3 in level3_docs:
+    for l3 in successful_l3_docs:
         insert_disclosure_doc(l3, conn)
     conn.commit()
 
-    return [level1_doc, *level2_docs, *level3_docs]
+    return [level1_doc, *level2_docs, *successful_l3_docs]
 
 
 async def regenerate_library_catalog(
