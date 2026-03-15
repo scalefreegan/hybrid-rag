@@ -133,6 +133,16 @@ Generation is bottom-up: L3 is extracted structurally, then L2, L1, and L0 are p
 
 When using `--no-agent`, chunks are stored with a placeholder disclosure doc and no hierarchy is built.
 
+## Claude Code Skill
+
+This repo ships a [Claude Code skill](https://code.claude.com/docs/en/skills) so Claude can guide you through CLI usage interactively. Install it with the [skills CLI](https://github.com/vercel-labs/skills):
+
+```bash
+npx skills add scalefreegan/hybrid-rag --skill pointy-rag
+```
+
+Once installed, ask Claude things like "set up pointy-rag", "ingest these documents", or "search my documents" and it will have full CLI reference available.
+
 ## Development
 
 ```bash
