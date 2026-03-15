@@ -20,7 +20,7 @@ def count_tokens(text: str) -> int:
     return len(text) // 4
 
 
-def _split_into_sections(text: str) -> list[tuple[str | None, str]]:
+def split_into_sections(text: str) -> list[tuple[str | None, str]]:
     """Split markdown text into (heading, body) sections.
 
     Returns a list of (heading_text, body_text) tuples. The first section
@@ -143,7 +143,7 @@ def chunk_markdown(
     if not text.strip():
         return []
 
-    sections = _split_into_sections(text)
+    sections = split_into_sections(text)
     chunks: list[TextChunk] = []
     chunk_index = 0
 

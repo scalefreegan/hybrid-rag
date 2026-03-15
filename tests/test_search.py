@@ -1,14 +1,12 @@
 """Tests for the pointer-based vector search module."""
 
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from pointy_rag.models import (
-    DisclosureDoc,
     DisclosureLevel,
-    Document,
-    DocumentFormat,
 )
 from pointy_rag.search import (
     get_children,
@@ -30,39 +28,56 @@ def sample_embedding():
     return [0.1] * 1024
 
 
+def _make_joined_row(
+    chunk_id="chunk1",
+    disclosure_doc_id="dd1",
+    chunk_content="Matched text",
+    chunk_metadata=None,
+    score=0.85,
+    dd_id="dd1",
+    dd_document_id="doc1",
+    dd_parent_id=None,
+    dd_level=3,
+    dd_title="Section 1",
+    dd_content="Content",
+    dd_ordering=0,
+    doc_id="doc1",
+    doc_title="Test Doc",
+    doc_format="pdf",
+    doc_source_path="/test.pdf",
+    doc_metadata=None,
+    doc_created_at=None,
+):
+    return {
+        "chunk_id": chunk_id,
+        "disclosure_doc_id": disclosure_doc_id,
+        "chunk_content": chunk_content,
+        "chunk_metadata": chunk_metadata or {},
+        "score": score,
+        "dd_id": dd_id,
+        "dd_document_id": dd_document_id,
+        "dd_parent_id": dd_parent_id,
+        "dd_level": dd_level,
+        "dd_title": dd_title,
+        "dd_content": dd_content,
+        "dd_ordering": dd_ordering,
+        "doc_id": doc_id,
+        "doc_title": doc_title,
+        "doc_format": doc_format,
+        "doc_source_path": doc_source_path,
+        "doc_metadata": doc_metadata or {},
+        "doc_created_at": doc_created_at or datetime.now(UTC),
+    }
+
+
 class TestSearch:
     @patch("pointy_rag.search.embed_query")
-    @patch("pointy_rag.search.get_disclosure_doc")
-    @patch("pointy_rag.search.get_document")
-    def test_returns_results(
-        self, mock_get_doc, mock_get_ddoc, mock_embed, mock_conn, sample_embedding
-    ):
+    def test_returns_results(self, mock_embed, mock_conn, sample_embedding):
         mock_embed.return_value = sample_embedding
-        mock_get_ddoc.return_value = DisclosureDoc(
-            id="dd1",
-            document_id="doc1",
-            level=DisclosureLevel.detailed_passage,
-            title="Section 1",
-            content="Content",
-        )
-        mock_get_doc.return_value = Document(
-            id="doc1",
-            title="Test Doc",
-            format=DocumentFormat.pdf,
-            source_path="/test.pdf",
-        )
 
         cursor = MagicMock()
         cursor.execute.return_value = cursor
-        cursor.fetchall.return_value = [
-            {
-                "id": "chunk1",
-                "disclosure_doc_id": "dd1",
-                "content": "Matched text",
-                "metadata": {},
-                "score": 0.85,
-            },
-        ]
+        cursor.fetchall.return_value = [_make_joined_row()]
         mock_conn.cursor.return_value = cursor
 
         results = search("test query", mock_conn)
@@ -72,6 +87,7 @@ class TestSearch:
         assert results[0].chunk.id == "chunk1"
         assert results[0].chunk.embedding is None  # Stripped
         assert results[0].disclosure_doc.title == "Section 1"
+        assert results[0].document.title == "Test Doc"
 
     @patch("pointy_rag.search.embed_query")
     def test_no_results(self, mock_embed, mock_conn, sample_embedding):
@@ -86,14 +102,10 @@ class TestSearch:
         assert results == []
 
     @patch("pointy_rag.search.embed_query")
-    @patch("pointy_rag.search.get_disclosure_doc")
-    @patch("pointy_rag.search.get_document")
     def test_respects_limit_and_threshold(
-        self, mock_get_doc, mock_get_ddoc, mock_embed, mock_conn, sample_embedding
+        self, mock_embed, mock_conn, sample_embedding
     ):
         mock_embed.return_value = sample_embedding
-        mock_get_ddoc.return_value = MagicMock(document_id="doc1")
-        mock_get_doc.return_value = MagicMock(title="Doc")
 
         cursor = MagicMock()
         cursor.execute.return_value = cursor
@@ -105,13 +117,16 @@ class TestSearch:
         # Check the SQL params include our limit and threshold
         call_args = cursor.execute.call_args
         params = call_args[0][1]
-        assert params[2] == 0.9  # threshold
-        assert params[3] == 5  # limit
+        # CTE-based query: (embedding, threshold, limit)
+        assert params[1] == 0.9  # threshold
+        assert params[2] == 5  # limit
 
 
 class TestGetDisclosureContent:
     @patch("pointy_rag.search.get_disclosure_doc")
     def test_returns_content(self, mock_get, mock_conn):
+        from pointy_rag.models import DisclosureDoc
+
         mock_get.return_value = DisclosureDoc(
             id="dd1",
             document_id="doc1",

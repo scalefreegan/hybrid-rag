@@ -80,6 +80,10 @@ def search(
         float,
         typer.Option("--threshold", "-t", help="Minimum similarity score"),
     ] = 0.7,
+    level: Annotated[
+        int | None,
+        typer.Option("--level", "-l", help="Filter by disclosure level (0-3)"),
+    ] = None,
     content: Annotated[
         bool,
         typer.Option("--content", "-c", help="Show chunk content"),
@@ -97,6 +101,12 @@ def search(
             results = do_search(
                 query, conn, limit=limit, threshold=threshold
             )
+
+            if level is not None:
+                results = [
+                    r for r in results
+                    if r.disclosure_doc and r.disclosure_doc.level == level
+                ]
 
             if not results:
                 console.print("[yellow]No results found.[/]")

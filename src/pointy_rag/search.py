@@ -3,9 +3,9 @@
 import psycopg
 import psycopg.rows
 
-from pointy_rag.db import get_disclosure_doc, get_document
+from pointy_rag.db import get_disclosure_doc
 from pointy_rag.embeddings import embed_query
-from pointy_rag.models import Chunk, DisclosureDoc, SearchResult
+from pointy_rag.models import Chunk, DisclosureDoc, Document, SearchResult
 
 
 def search(
@@ -30,30 +30,62 @@ def search(
     cursor = conn.cursor(row_factory=psycopg.rows.dict_row)
     rows = cursor.execute(
         """
+        WITH scored AS (
+            SELECT
+                c.id AS chunk_id, c.disclosure_doc_id, c.content AS chunk_content,
+                c.metadata AS chunk_metadata,
+                1 - (c.embedding <=> %s::vector) AS score
+            FROM chunks c
+            WHERE c.embedding IS NOT NULL
+        )
         SELECT
-            c.id, c.disclosure_doc_id, c.content, c.metadata,
-            1 - (c.embedding <=> %s::vector) AS score
-        FROM chunks c
-        WHERE c.embedding IS NOT NULL
-          AND 1 - (c.embedding <=> %s::vector) >= %s
-        ORDER BY score DESC
+            s.chunk_id, s.disclosure_doc_id, s.chunk_content, s.chunk_metadata,
+            s.score,
+            dd.id AS dd_id, dd.document_id AS dd_document_id,
+            dd.parent_id AS dd_parent_id, dd.level AS dd_level,
+            dd.title AS dd_title, dd.content AS dd_content,
+            dd.ordering AS dd_ordering,
+            doc.id AS doc_id, doc.title AS doc_title, doc.format AS doc_format,
+            doc.source_path AS doc_source_path, doc.metadata AS doc_metadata,
+            doc.created_at AS doc_created_at
+        FROM scored s
+        JOIN disclosure_docs dd ON dd.id = s.disclosure_doc_id
+        JOIN documents doc ON doc.id = dd.document_id
+        WHERE s.score >= %s
+        ORDER BY s.score DESC
         LIMIT %s
         """,
-        (query_embedding, query_embedding, threshold, limit),
+        (query_embedding, threshold, limit),
     ).fetchall()
 
     results: list[SearchResult] = []
     for row in rows:
         chunk = Chunk(
-            id=row["id"],
+            id=row["chunk_id"],
             disclosure_doc_id=row["disclosure_doc_id"],
-            content=row["content"],
+            content=row["chunk_content"],
             embedding=None,  # Don't return embeddings in search results.
-            metadata=row["metadata"],
+            metadata=row["chunk_metadata"],
         )
 
-        ddoc = get_disclosure_doc(row["disclosure_doc_id"], conn)
-        doc = get_document(ddoc.document_id, conn) if ddoc else None
+        ddoc = DisclosureDoc(
+            id=row["dd_id"],
+            document_id=row["dd_document_id"],
+            parent_id=row["dd_parent_id"],
+            level=row["dd_level"],
+            title=row["dd_title"],
+            content=row["dd_content"],
+            ordering=row["dd_ordering"],
+        )
+
+        doc = Document(
+            id=row["doc_id"],
+            title=row["doc_title"],
+            format=row["doc_format"],
+            source_path=row["doc_source_path"],
+            metadata=row["doc_metadata"],
+            created_at=row["doc_created_at"],
+        )
 
         results.append(
             SearchResult(

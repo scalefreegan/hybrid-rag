@@ -5,7 +5,7 @@ import asyncio
 import psycopg
 import psycopg.rows
 
-from pointy_rag.chunker import _split_into_sections
+from pointy_rag.chunker import split_into_sections
 from pointy_rag.claude_agent import run_disclosure_agent
 from pointy_rag.db import (
     delete_disclosure_docs_by_level,
@@ -42,7 +42,7 @@ async def generate_disclosure_hierarchy(
         return []
 
     # --- Level 3: structural extraction (no agent) ---
-    sections = _split_into_sections(markdown)
+    sections = split_into_sections(markdown)
     level3_docs: list[DisclosureDoc] = []
     for idx, (heading, body) in enumerate(sections):
         if not body:
