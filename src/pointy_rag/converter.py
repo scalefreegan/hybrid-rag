@@ -71,9 +71,16 @@ def extract_text_fallback(path: str | Path, fmt: DocumentFormat) -> str:
         Extracted plain text content.
 
     Raises:
-        ValueError: If the PDF is encrypted/password-protected.
+        ValueError: If the file exceeds MAX_FILE_SIZE or the PDF is
+            encrypted/password-protected.
     """
     path = Path(path)
+    size = path.stat().st_size
+    if size > MAX_FILE_SIZE:
+        raise ValueError(
+            f"File too large ({size / 1024 / 1024:.1f} MB). "
+            f"Maximum is {MAX_FILE_SIZE / 1024 / 1024:.0f} MB."
+        )
 
     if fmt == DocumentFormat.pdf:
         import fitz  # pymupdf

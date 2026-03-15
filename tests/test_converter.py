@@ -216,6 +216,21 @@ async def test_convert_file_too_large(tmp_path):
             await convert_to_markdown(big_file, use_agent=False)
 
 
+def test_extract_text_fallback_rejects_oversized_file(tmp_path):
+    """extract_text_fallback raises ValueError when the file exceeds MAX_FILE_SIZE."""
+    pdf_path = _make_minimal_pdf(tmp_path)
+
+    # Patch stat to report a size just over the limit without needing a real large file
+    class _FakeStat:
+        st_size = MAX_FILE_SIZE + 1
+
+    with (
+        patch.object(type(pdf_path), "stat", return_value=_FakeStat()),
+        pytest.raises(ValueError, match="too large"),
+    ):
+        extract_text_fallback(pdf_path, DocumentFormat.pdf)
+
+
 def test_extract_password_protected_pdf(tmp_path):
     """Raise ValueError for encrypted PDFs."""
     import fitz
