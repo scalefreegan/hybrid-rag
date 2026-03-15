@@ -2,3 +2,17 @@
 # Dolt database files (added by bd init)
 .dolt/
 *.db
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+.env
+
+# Gas Town (added by gt)
+.runtime/
+.claude/
+.logs/
+state.json

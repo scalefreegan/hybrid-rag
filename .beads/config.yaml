@@ -52,3 +52,7 @@
 # - linear.api-key
 # - github.org
 # - github.repo
+
+prefix: 
+issue-prefix: 
+dolt.idle-timeout: "0"
