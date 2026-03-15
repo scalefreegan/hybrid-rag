@@ -1,9 +1,7 @@
 """Tests for the markdown-aware chunker."""
 
-import pytest
 
 from pointy_rag.chunker import TextChunk, chunk_markdown, count_tokens
-
 
 # ---------------------------------------------------------------------------
 # count_tokens
@@ -47,7 +45,10 @@ def test_single_small_section():
 
 
 def test_multiple_headings():
-    text = "## Section One\n\nContent of section one.\n\n## Section Two\n\nContent of section two."
+    text = (
+        "## Section One\n\nContent of section one.\n\n"
+        "## Section Two\n\nContent of section two."
+    )
     chunks = chunk_markdown(text)
     assert len(chunks) == 2
     assert chunks[0].heading == "## Section One"

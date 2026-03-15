@@ -97,7 +97,9 @@ async def run_agent(
     # `claude -p --output-format json` wraps output as:
     # {"type": "result", "result": "<agent text>", ...}
     if isinstance(wrapper, dict):
-        return wrapper.get("result", raw)
+        result_val = wrapper.get("result")
+        # Guard against null/non-string result field.
+        return result_val if isinstance(result_val, str) else raw
     return raw
 
 
@@ -139,6 +141,10 @@ async def run_conversion_agent(
     )
 
 
+# Maximum text length for disclosure agent prompts (~200k chars ≈ 50k tokens).
+MAX_DISCLOSURE_TEXT_LENGTH = 200_000
+
+
 async def run_disclosure_agent(
     text: str,
     title: str,
@@ -155,7 +161,16 @@ async def run_disclosure_agent(
 
     Returns:
         The agent's result text (the summary).
+
+    Raises:
+        ValueError: If text exceeds MAX_DISCLOSURE_TEXT_LENGTH.
     """
+    if len(text) > MAX_DISCLOSURE_TEXT_LENGTH:
+        raise ValueError(
+            f"Document text too large for disclosure agent "
+            f"({len(text)} chars, max {MAX_DISCLOSURE_TEXT_LENGTH}). "
+            f"Chunk the document first."
+        )
     level_descriptions = {
         0: "a one-line library catalog entry (title, author, subject)",
         1: "a brief one-paragraph overview",
@@ -163,11 +178,12 @@ async def run_disclosure_agent(
         3: "a detailed summary covering all major sections",
     }
     level_desc = level_descriptions.get(level, f"a level-{level} summary")
-    # Use clear delimiters to separate instructions from document content
-    # to prevent prompt injection via malicious document text.
+    # Sanitize document text: escape any closing delimiter tags to prevent
+    # prompt injection via premature tag closure.
+    safe_text = text.replace("</document>", "&lt;/document&gt;")
     prompt = (
         f"Generate {level_desc} for the following document titled {title!r}.\n\n"
-        f"<document>\n{text}\n</document>\n\n"
+        f"<document>\n{safe_text}\n</document>\n\n"
         f"Generate ONLY the summary — no preamble or meta-commentary."
     )
     system_prompt = (

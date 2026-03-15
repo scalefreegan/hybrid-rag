@@ -4,7 +4,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pointy_rag.embeddings import embed_query, embed_texts, get_voyage_client, reset_client
+from pointy_rag.embeddings import (
+    embed_query,
+    embed_texts,
+    get_voyage_client,
+    reset_client,
+)
 
 
 def _make_mock_client(embedding_dim: int = 4) -> MagicMock:
@@ -94,9 +99,9 @@ def test_embed_texts_all_retries_fail():
     with (
         patch("pointy_rag.embeddings.get_voyage_client", return_value=mock_client),
         patch("pointy_rag.embeddings.time.sleep"),
+        pytest.raises(RuntimeError, match="Embedding failed after 3 retries"),
     ):
-        with pytest.raises(RuntimeError, match="Embedding failed after 3 retries"):
-            embed_texts(["hello"], max_retries=3)
+        embed_texts(["hello"], max_retries=3)
 
     assert mock_client.embed.call_count == 3
 
@@ -109,9 +114,9 @@ def test_embed_texts_auth_error_no_retry():
     with (
         patch("pointy_rag.embeddings.get_voyage_client", return_value=mock_client),
         patch("pointy_rag.embeddings.time.sleep"),
+        pytest.raises(RuntimeError, match="authentication failed"),
     ):
-        with pytest.raises(RuntimeError, match="authentication failed"):
-            embed_texts(["hello"], max_retries=3)
+        embed_texts(["hello"], max_retries=3)
 
     # Should NOT have retried — only 1 call.
     assert mock_client.embed.call_count == 1
@@ -121,6 +126,20 @@ def test_embed_texts_none_value_raises():
     """Non-string values in texts list should raise TypeError."""
     with pytest.raises(TypeError, match="texts\\[1\\] must be str"):
         embed_texts(["hello", None], max_retries=1)
+
+
+def test_embed_texts_count_mismatch():
+    """Raise RuntimeError when API returns fewer embeddings than input."""
+    mock_client = MagicMock()
+    result = MagicMock()
+    result.embeddings = [[0.1, 0.2]]  # Only 1 embedding for 3 texts
+    mock_client.embed.return_value = result
+
+    with (
+        patch("pointy_rag.embeddings.get_voyage_client", return_value=mock_client),
+        pytest.raises(RuntimeError, match="returned 1 embeddings for 3 texts"),
+    ):
+        embed_texts(["a", "b", "c"], max_retries=1)
 
 
 # ---------------------------------------------------------------------------
@@ -147,9 +166,11 @@ def test_get_voyage_client_missing_key():
     mock_settings = MagicMock()
     mock_settings.voyage_api_key = ""
 
-    with patch("pointy_rag.embeddings.get_settings", return_value=mock_settings):
-        with pytest.raises(RuntimeError, match="VOYAGE_API_KEY not set"):
-            get_voyage_client()
+    with (
+        patch("pointy_rag.embeddings.get_settings", return_value=mock_settings),
+        pytest.raises(RuntimeError, match="VOYAGE_API_KEY not set"),
+    ):
+        get_voyage_client()
 
 
 def test_client_singleton():
@@ -159,14 +180,14 @@ def test_client_singleton():
 
     with (
         patch("pointy_rag.embeddings.get_settings", return_value=mock_settings),
-        patch("pointy_rag.embeddings.voyageai.Client") as MockClient,
+        patch("pointy_rag.embeddings.voyageai.Client") as mock_client_cls,
     ):
-        MockClient.return_value = MagicMock()
+        mock_client_cls.return_value = MagicMock()
         client1 = get_voyage_client()
         client2 = get_voyage_client()
 
     assert client1 is client2
-    MockClient.assert_called_once()
+    mock_client_cls.assert_called_once()
 
 
 def test_reset_client():
@@ -179,9 +200,9 @@ def test_reset_client():
 
     with (
         patch("pointy_rag.embeddings.get_settings", return_value=mock_settings),
-        patch("pointy_rag.embeddings.voyageai.Client") as MockClient,
+        patch("pointy_rag.embeddings.voyageai.Client") as mock_client_cls,
     ):
-        MockClient.side_effect = [instance1, instance2]
+        mock_client_cls.side_effect = [instance1, instance2]
         client1 = get_voyage_client()
         reset_client()
         client2 = get_voyage_client()
@@ -189,4 +210,4 @@ def test_reset_client():
     assert client1 is not client2
     assert client1 is instance1
     assert client2 is instance2
-    assert MockClient.call_count == 2
+    assert mock_client_cls.call_count == 2

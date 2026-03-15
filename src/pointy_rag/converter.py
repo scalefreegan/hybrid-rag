@@ -14,16 +14,24 @@ MAX_FILE_SIZE = 50 * 1024 * 1024
 
 
 def _validate_path(path: Path) -> Path:
-    """Resolve and validate a document path.
+    """Resolve and validate a document path for existence and size.
+
+    Checks that the path points to an existing, non-empty file within
+    the size limit. Does NOT enforce base-directory containment — callers
+    exposing this to untrusted input must validate that separately.
 
     Raises:
-        FileNotFoundError: If the file does not exist.
-        ValueError: If the path traverses outside its parent or is too large.
+        FileNotFoundError: If the path does not point to a regular file.
+        ValueError: If the file is empty or exceeds MAX_FILE_SIZE.
     """
     resolved = path.resolve()
     if not resolved.is_file():
-        raise FileNotFoundError(f"Document not found: {resolved}")
+        raise FileNotFoundError(
+            f"Document not found (expected a file): {path}"
+        )
     size = resolved.stat().st_size
+    if size == 0:
+        raise ValueError(f"File is empty (0 bytes): {path.name}")
     if size > MAX_FILE_SIZE:
         raise ValueError(
             f"File too large ({size / 1024 / 1024:.1f} MB). "

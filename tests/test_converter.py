@@ -2,23 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
-import io
-import struct
-import zlib
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from pointy_rag.converter import (
-    MAX_FILE_SIZE,
     convert_to_markdown,
     detect_format,
     extract_text_fallback,
 )
 from pointy_rag.models import DocumentFormat
-
 
 # ---------------------------------------------------------------------------
 # detect_format
@@ -192,6 +186,22 @@ async def test_convert_nonexistent_file(tmp_path):
     fake = tmp_path / "no_such_file.pdf"
     with pytest.raises(FileNotFoundError, match="Document not found"):
         await convert_to_markdown(fake, use_agent=False)
+
+
+@pytest.mark.asyncio
+async def test_convert_empty_file(tmp_path):
+    """Raise ValueError for 0-byte files."""
+    empty = tmp_path / "empty.pdf"
+    empty.write_bytes(b"")
+    with pytest.raises(ValueError, match="empty"):
+        await convert_to_markdown(empty, use_agent=False)
+
+
+@pytest.mark.asyncio
+async def test_convert_directory_not_file(tmp_path):
+    """Raise FileNotFoundError when given a directory."""
+    with pytest.raises(FileNotFoundError, match="expected a file"):
+        await convert_to_markdown(tmp_path, use_agent=False)
 
 
 def test_extract_password_protected_pdf(tmp_path):

@@ -77,8 +77,6 @@ def embed_texts(
         while retry_count < max_retries:
             try:
                 result = client.embed(texts=batch, model=model)
-                all_embeddings.extend(result.embeddings)
-                break
             except Exception as e:
                 last_error = e
                 # Don't retry auth errors — they won't succeed on retry.
@@ -95,6 +93,17 @@ def embed_texts(
                         f"Embedding failed after {max_retries} retries "
                         f"(batch {i // batch_size + 1})"
                     ) from last_error
+                continue
+
+            # Validate response count outside try/except so mismatches
+            # propagate immediately without retrying.
+            if len(result.embeddings) != len(batch):
+                raise RuntimeError(
+                    f"Voyage API returned {len(result.embeddings)} embeddings "
+                    f"for {len(batch)} texts (batch {i // batch_size + 1})"
+                )
+            all_embeddings.extend(result.embeddings)
+            break
 
     return all_embeddings
 
