@@ -1,6 +1,5 @@
 """Tests for the headless Claude Code agent wrapper."""
 
-import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,23 +13,47 @@ from pointy_rag.claude_agent import (
 )
 
 
+class _FakeProc:
+    """Lightweight fake asyncio.subprocess.Process.
+
+    Avoids MagicMock/AsyncMock base to prevent RuntimeWarning from
+    unawaited coroutine tracking during GC.
+    """
+
+    def __init__(
+        self,
+        stdout: bytes = b"",
+        stderr: bytes = b"",
+        returncode: int = 0,
+        communicate_raises: type[Exception] | None = None,
+    ):
+        self.pid = 12345
+        self.returncode = returncode
+        self._stdout = stdout
+        self._stderr = stderr
+        self._communicate_raises = communicate_raises
+        self.kill = MagicMock()
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        if self._communicate_raises is not None:
+            raise self._communicate_raises()
+        return self._stdout, self._stderr
+
+
 def _make_proc(
     stdout: bytes = b"",
     stderr: bytes = b"",
     returncode: int = 0,
     *,
     communicate_raises: type[Exception] | None = None,
-) -> MagicMock:
-    """Build a mock asyncio Process."""
-    proc = MagicMock()
-    proc.pid = 12345
-    proc.returncode = returncode
-    if communicate_raises is not None:
-        proc.communicate = AsyncMock(side_effect=communicate_raises)
-    else:
-        proc.communicate = AsyncMock(return_value=(stdout, stderr))
-    proc.kill = MagicMock()
-    return proc
+) -> _FakeProc:
+    """Build a fake asyncio Process."""
+    return _FakeProc(
+        stdout=stdout,
+        stderr=stderr,
+        returncode=returncode,
+        communicate_raises=communicate_raises,
+    )
 
 
 def _json_wrapper(result: str) -> bytes:
@@ -54,6 +77,12 @@ async def test_run_agent_success():
     assert result == expected
 
 
+async def _timeout_wait_for(coro, **kwargs):
+    """Mock wait_for that closes the coroutine before raising."""
+    coro.close()
+    raise TimeoutError
+
+
 @pytest.mark.asyncio
 async def test_run_agent_timeout():
     """Timeout kills the process group and raises TimeoutError."""
@@ -61,7 +90,7 @@ async def test_run_agent_timeout():
 
     with (
         patch("asyncio.create_subprocess_exec", _mock_exec(proc)),
-        patch("asyncio.wait_for", side_effect=asyncio.TimeoutError),
+        patch("asyncio.wait_for", side_effect=_timeout_wait_for),
         patch("os.killpg") as mock_killpg,
         pytest.raises(TimeoutError, match="timed out after 5s"),
     ):
@@ -71,7 +100,6 @@ async def test_run_agent_timeout():
 
 
 @pytest.mark.asyncio
-@pytest.mark.filterwarnings("ignore::RuntimeWarning")
 async def test_run_agent_nonzero_exit():
     """Non-zero exit code raises RuntimeError with stderr content."""
     proc = _make_proc(

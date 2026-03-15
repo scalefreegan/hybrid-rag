@@ -92,7 +92,7 @@ async def generate_disclosure_hierarchy(
 
     level2_docs: list[DisclosureDoc] = []
     successful_l3_docs: list[DisclosureDoc] = []
-    for l3, result in zip(level3_docs, gather_results):
+    for l3, result in zip(level3_docs, gather_results, strict=True):
         if isinstance(result, BaseException):
             _log.warning(
                 "L2 summary failed for section %r in document %s, skipping: %s",
