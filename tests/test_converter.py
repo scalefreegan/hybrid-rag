@@ -103,7 +103,7 @@ def test_extract_text_fallback_epub(tmp_path):
 
 @pytest.mark.asyncio
 async def test_convert_to_markdown_agent_success(tmp_path):
-    """Agent path returns result and no output path when output_dir omitted."""
+    """Agent path returns result, no output path, and calls run_conversion_agent once."""
     pdf_path = _make_minimal_pdf(tmp_path)
     agent_md = "# Agent Output\n\nContent here."
 
@@ -115,23 +115,7 @@ async def test_convert_to_markdown_agent_success(tmp_path):
 
     assert text == agent_md
     assert path is None
-
-
-@pytest.mark.asyncio
-async def test_convert_to_markdown_agent_success_via_mock(tmp_path):
-    """Verify run_conversion_agent is called when use_agent=True and succeeds."""
-    pdf_path = _make_minimal_pdf(tmp_path)
-    agent_md = "# Converted by Agent\n\nSome content."
-
-    mock_agent_module = MagicMock()
-    mock_agent_module.run_conversion_agent = AsyncMock(return_value=agent_md)
-
-    with patch.dict("sys.modules", {"pointy_rag.claude_agent": mock_agent_module}):
-        text, path = await convert_to_markdown(pdf_path, use_agent=True)
-
-    assert text == agent_md
-    assert path is None
-    mock_agent_module.run_conversion_agent.assert_called_once_with(str(pdf_path.resolve()))
+    mock_module.run_conversion_agent.assert_called_once_with(str(pdf_path.resolve()))
 
 
 # ---------------------------------------------------------------------------
