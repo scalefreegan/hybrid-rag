@@ -225,3 +225,54 @@ def update_disclosure_doc_parent(
         "UPDATE disclosure_docs SET parent_id = %s WHERE id = %s",
         (parent_id, ddoc_id),
     )
+
+
+def get_document_by_source_path(
+    source_path: str, conn: psycopg.Connection
+) -> Document | None:
+    """Look up a document by its source_path (for re-ingestion detection)."""
+    row = conn.cursor(row_factory=psycopg.rows.dict_row).execute(
+        "SELECT id, title, format, source_path, metadata, created_at"
+        " FROM documents WHERE source_path = %s",
+        (source_path,),
+    ).fetchone()
+    if row is None:
+        return None
+    return Document(
+        id=row["id"],
+        title=row["title"],
+        format=row["format"],
+        source_path=row["source_path"],
+        metadata=row["metadata"],
+        created_at=row["created_at"],
+    )
+
+
+def delete_document_data(doc_id: str, conn: psycopg.Connection) -> None:
+    """Delete all chunks, disclosure docs, and the document itself.
+
+    Deletion order respects FK constraints:
+    chunks -> disclosure_docs (clear parent_ids first) -> disclosure_docs -> document.
+    """
+    conn.execute("DELETE FROM chunks WHERE disclosure_doc_id IN "
+                 "(SELECT id FROM disclosure_docs WHERE document_id = %s)", (doc_id,))
+    conn.execute("UPDATE disclosure_docs SET parent_id = NULL "
+                 "WHERE document_id = %s", (doc_id,))
+    conn.execute("DELETE FROM disclosure_docs WHERE document_id = %s", (doc_id,))
+    conn.execute("DELETE FROM documents WHERE id = %s", (doc_id,))
+
+
+def list_documents(conn: psycopg.Connection) -> list[dict]:
+    """List all ingested documents with chunk counts."""
+    return conn.cursor(row_factory=psycopg.rows.dict_row).execute(
+        """
+        SELECT d.id, d.title, d.format, d.source_path, d.created_at,
+               COUNT(DISTINCT dd.id) AS disclosure_count,
+               COUNT(DISTINCT c.id) AS chunk_count
+        FROM documents d
+        LEFT JOIN disclosure_docs dd ON dd.document_id = d.id
+        LEFT JOIN chunks c ON c.disclosure_doc_id = dd.id
+        GROUP BY d.id, d.title, d.format, d.source_path, d.created_at
+        ORDER BY d.created_at DESC
+        """,
+    ).fetchall()

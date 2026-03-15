@@ -54,19 +54,61 @@ def init(
 
 @app.command()
 def ingest(
-    path: Annotated[
-        Path,
-        typer.Argument(help="File or directory to ingest"),
+    paths: Annotated[
+        list[Path],
+        typer.Argument(help="Files to ingest (PDF or EPUB)"),
     ],
-    collection: Annotated[
-        str,
-        typer.Option("--collection", "-c", help="Target collection name"),
-    ] = "default",
+    output_dir: Annotated[
+        Path,
+        typer.Option("--output-dir", "-o", help="Directory for converted markdown"),
+    ] = Path("./converted"),
+    no_agent: Annotated[
+        bool,
+        typer.Option("--no-agent", help="Skip Claude agent (fallback, no disclosure)"),
+    ] = False,
 ):
     """Ingest documents into the vector store."""
+    import asyncio
+
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+
+    from pointy_rag.db import get_connection
+    from pointy_rag.ingest import ingest_paths
+
+    with Progress(
+        SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        task = progress.add_task(
+            f"Ingesting {len(paths)} file(s)...", total=None
+        )
+
+        try:
+            with get_connection() as conn:
+                succeeded, failed = asyncio.run(
+                    ingest_paths(
+                        paths, conn,
+                        output_dir=output_dir,
+                        use_agent=not no_agent,
+                    )
+                )
+        except Exception as exc:
+            console.print(f"[bold red]Error:[/] {exc}")
+            raise typer.Exit(code=1) from exc
+        finally:
+            progress.remove_task(task)
+
+    for doc in succeeded:
+        console.print(f"[bold green]\u2713[/] {doc.title} ({doc.format})")
+
+    for path, exc in failed:
+        console.print(f"[bold red]\u2717[/] {path.name}: {exc}")
+
     console.print(
-        f"[bold green]ingest[/] {path} \u2192 {collection} (not yet implemented)"
+        f"\n[bold]{len(succeeded)} succeeded, {len(failed)} failed[/]"
     )
+    if failed:
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -127,7 +169,7 @@ def search(
                 )
                 ddoc = r.disclosure_doc
                 ddoc_title = ddoc.title if ddoc else "\u2014"
-                level = str(ddoc.level) if ddoc else "\u2014"
+                ddoc_level = str(ddoc.level) if ddoc else "\u2014"
                 children_count = (
                     len(get_children(ddoc.id, conn))
                     if ddoc else 0
@@ -135,7 +177,7 @@ def search(
                 row = [
                     f"{r.score:.3f}",
                     doc_title,
-                    level,
+                    ddoc_level,
                     ddoc_title,
                     str(children_count),
                 ]
@@ -229,17 +271,43 @@ def drill(
 
 
 @app.command()
-def ls(
-    collection: Annotated[
-        str | None,
-        typer.Argument(help="Collection to list (omit to list all collections)"),
-    ] = None,
-):
-    """List collections or documents in a collection."""
-    if collection:
-        console.print(f"[bold green]ls[/] {collection} (not yet implemented)")
-    else:
-        console.print("[bold green]ls[/] (listing all collections \u2014 not yet implemented)")  # noqa: E501
+def ls():
+    """List ingested documents."""
+    from rich.table import Table
+
+    from pointy_rag.db import get_connection, list_documents
+
+    try:
+        with get_connection() as conn:
+            docs = list_documents(conn)
+
+            if not docs:
+                console.print("[yellow]No documents ingested yet.[/]")
+                return
+
+            table = Table(title="Ingested Documents")
+            table.add_column("ID", style="cyan", max_width=12)
+            table.add_column("Title", style="bold")
+            table.add_column("Format", width=6)
+            table.add_column("Chunks", width=8)
+            table.add_column("Disclosures", width=12)
+            table.add_column("Date", style="dim")
+
+            for d in docs:
+                table.add_row(
+                    d["id"][:12],
+                    d["title"],
+                    d["format"],
+                    str(d["chunk_count"]),
+                    str(d["disclosure_count"]),
+                    str(d["created_at"].date()) if d["created_at"] else "\u2014",
+                )
+
+            console.print(table)
+
+    except Exception as exc:
+        console.print(f"[bold red]Error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
 
 
 def main():
