@@ -23,8 +23,8 @@ CREATE TABLE IF NOT EXISTS documents (
 
 CREATE TABLE IF NOT EXISTS disclosure_docs (
     id TEXT PRIMARY KEY,
-    document_id TEXT NOT NULL REFERENCES documents(id),
-    parent_id TEXT REFERENCES disclosure_docs(id),
+    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    parent_id TEXT REFERENCES disclosure_docs(id) ON DELETE SET NULL,
     level INTEGER NOT NULL,
     title TEXT NOT NULL,
     content TEXT NOT NULL,
@@ -39,7 +39,7 @@ CREATE INDEX IF NOT EXISTS idx_disclosure_docs_doc_level
 
 CREATE TABLE IF NOT EXISTS chunks (
     id TEXT PRIMARY KEY,
-    disclosure_doc_id TEXT NOT NULL REFERENCES disclosure_docs(id),
+    disclosure_doc_id TEXT NOT NULL REFERENCES disclosure_docs(id) ON DELETE CASCADE,
     content TEXT NOT NULL,
     embedding vector(1024),
     metadata JSONB NOT NULL DEFAULT '{}'

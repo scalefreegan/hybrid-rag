@@ -9,6 +9,46 @@ from pointy_rag.models import DocumentFormat
 
 logger = logging.getLogger(__name__)
 
+
+async def run_conversion_agent(
+    source_path: str,
+    output_path: str | None = None,
+    timeout: int = 300,
+) -> str:
+    """Convert a document to markdown via Claude agent.
+
+    Args:
+        source_path: Path to the source document to convert.
+        output_path: Optional path where the markdown output should be written.
+            If None, the agent returns the markdown as text.
+        timeout: Timeout in seconds (default 300).
+
+    Returns:
+        The agent's result text (the markdown content).
+    """
+    from pointy_rag.claude_agent import run_agent
+
+    if output_path:
+        prompt = (
+            f"Convert the document at {source_path!r} to well-structured markdown, "
+            f"preserving ALL content. Write the result to {output_path!r}."
+        )
+    else:
+        prompt = (
+            f"Convert the document at {source_path!r} to well-structured markdown, "
+            f"preserving ALL content. Output ONLY the markdown."
+        )
+    system_prompt = (
+        "You are a document conversion specialist. "
+        "Convert documents to markdown accurately, preserving all content, "
+        "structure, and formatting. Do not summarize or omit any content."
+    )
+    return await run_agent(
+        prompt=prompt,
+        system_prompt=system_prompt,
+        timeout=timeout,
+    )
+
 # Maximum file size for conversion (50 MB)
 MAX_FILE_SIZE = 50 * 1024 * 1024
 
@@ -136,8 +176,6 @@ async def convert_to_markdown(
 
     if use_agent:
         try:
-            from pointy_rag.claude_agent import run_conversion_agent
-
             markdown = await run_conversion_agent(str(source_path))
         except Exception as exc:
             logger.warning("Agent conversion failed, falling back: %s", exc)

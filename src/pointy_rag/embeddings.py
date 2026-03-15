@@ -10,8 +10,17 @@ from pointy_rag.config import get_settings
 _client: voyageai.Client | None = None
 _client_lock = threading.Lock()
 
-# Error substrings that indicate non-retryable auth/permission failures.
-_AUTH_ERROR_PATTERNS = ("401", "403", "unauthorized", "forbidden", "invalid api key")
+# Error patterns that indicate non-retryable auth/permission failures.
+# Use contextual patterns to avoid false positives (e.g., port 4013, ID containing 401).
+_AUTH_ERROR_PATTERNS = (
+    "status 401",
+    "status 403",
+    "status_code=401",
+    "status_code=403",
+    "unauthorized",
+    "forbidden",
+    "invalid api key",
+)
 
 
 def get_voyage_client() -> voyageai.Client:

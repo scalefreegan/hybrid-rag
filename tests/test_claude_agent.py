@@ -5,12 +5,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from pointy_rag.claude_agent import (
-    MAX_DISCLOSURE_TEXT_LENGTH,
-    run_agent,
-    run_conversion_agent,
-    run_disclosure_agent,
-)
+from pointy_rag.claude_agent import run_agent
+from pointy_rag.converter import run_conversion_agent
+from pointy_rag.disclosure import MAX_DISCLOSURE_TEXT_LENGTH, run_disclosure_agent
 
 
 class _FakeProc:
