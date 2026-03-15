@@ -54,7 +54,7 @@ CREATE INDEX IF NOT EXISTS idx_chunks_embedding
 def _split_ddl(ddl: str) -> list[str]:
     """Split a DDL string into individual SQL statements."""
     statements = re.split(r";\s*\n", ddl.strip())
-    return [s.strip() + ";" for s in statements if s.strip()]
+    return [s.strip().rstrip(";") + ";" for s in statements if s.strip()]
 
 
 @contextmanager
@@ -90,7 +90,7 @@ def insert_document(doc: Document, conn: psycopg.Connection) -> None:
         (
             doc.id,
             doc.title,
-            doc.format.value if hasattr(doc.format, "value") else doc.format,
+            doc.format.value,
             doc.source_path,
             doc.metadata,
             doc.created_at,
@@ -136,11 +136,10 @@ def insert_chunk(chunk: Chunk, conn: psycopg.Connection) -> None:
 
 
 def get_document(doc_id: str, conn: psycopg.Connection) -> Document | None:
-    row = conn.execute(
+    row = conn.cursor(row_factory=psycopg.rows.dict_row).execute(
         "SELECT id, title, format, source_path, metadata, created_at"
         " FROM documents WHERE id = %s",
         (doc_id,),
-        row_factory=psycopg.rows.dict_row,
     ).fetchone()
     if row is None:
         return None

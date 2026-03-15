@@ -20,10 +20,12 @@ def _mask_url_password(url: str) -> str:
     """Mask the password portion of a database URL."""
     parsed = urlparse(url)
     if parsed.password:
-        masked = parsed._replace(
-            netloc=f"{parsed.username}:***@{parsed.hostname}"
-            + (f":{parsed.port}" if parsed.port else ""),
-        )
+        host = parsed.hostname or ""
+        host_part = f"[{host}]" if ":" in host else host
+        netloc = f"{parsed.username}:***@{host_part}"
+        if parsed.port:
+            netloc += f":{parsed.port}"
+        masked = parsed._replace(netloc=netloc)
         return urlunparse(masked)
     return url
 
@@ -45,7 +47,8 @@ def init(
         create_tables(url)
         console.print("[bold green]\u2713[/] Tables created successfully.")
     except Exception as exc:
-        console.print(f"[bold red]\u2717[/] Failed to initialize database: {exc}")
+        safe_msg = _mask_url_password(str(exc))
+        console.print(f"[bold red]\u2717[/] Failed to initialize database: {safe_msg}")
         raise typer.Exit(code=1) from exc
 
 

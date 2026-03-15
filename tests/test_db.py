@@ -56,7 +56,8 @@ def test_insert_chunk(mock_conn):
 
 def test_get_document_found(mock_conn):
     now = datetime.now(UTC)
-    mock_conn.execute.return_value.fetchone.return_value = {
+    mock_cursor = MagicMock()
+    mock_cursor.execute.return_value.fetchone.return_value = {
         "id": "doc-abc",
         "title": "Test Title",
         "format": "epub",
@@ -64,6 +65,7 @@ def test_get_document_found(mock_conn):
         "metadata": {"key": "val"},
         "created_at": now,
     }
+    mock_conn.cursor.return_value = mock_cursor
     doc = get_document("doc-abc", mock_conn)
     assert doc is not None
     assert doc.id == "doc-abc"
@@ -74,7 +76,9 @@ def test_get_document_found(mock_conn):
 
 
 def test_get_document_not_found(mock_conn):
-    mock_conn.execute.return_value.fetchone.return_value = None
+    mock_cursor = MagicMock()
+    mock_cursor.execute.return_value.fetchone.return_value = None
+    mock_conn.cursor.return_value = mock_cursor
     doc = get_document("nonexistent", mock_conn)
     assert doc is None
 
@@ -113,6 +117,7 @@ def test_split_ddl():
     assert len(statements) == 6  # 3 tables + 3 indexes
     for stmt in statements:
         assert stmt.endswith(";")
+        assert not stmt.endswith(";;"), f"Double semicolon: {stmt!r}"
 
 
 def test_get_settings_used_for_connection():
