@@ -87,7 +87,7 @@ def test_embed_texts_retry():
 
 
 def test_embed_texts_all_retries_fail():
-    """All retry attempts fail — should raise an Exception."""
+    """All retry attempts fail — should raise RuntimeError."""
     mock_client = MagicMock()
     mock_client.embed.side_effect = ConnectionError("always fails")
 
@@ -95,10 +95,32 @@ def test_embed_texts_all_retries_fail():
         patch("pointy_rag.embeddings.get_voyage_client", return_value=mock_client),
         patch("pointy_rag.embeddings.time.sleep"),
     ):
-        with pytest.raises(Exception, match="Failed after 3 retries"):
+        with pytest.raises(RuntimeError, match="Embedding failed after 3 retries"):
             embed_texts(["hello"], max_retries=3)
 
     assert mock_client.embed.call_count == 3
+
+
+def test_embed_texts_auth_error_no_retry():
+    """Auth errors (401/403) should fail immediately without retrying."""
+    mock_client = MagicMock()
+    mock_client.embed.side_effect = Exception("401 Unauthorized: invalid api key")
+
+    with (
+        patch("pointy_rag.embeddings.get_voyage_client", return_value=mock_client),
+        patch("pointy_rag.embeddings.time.sleep"),
+    ):
+        with pytest.raises(RuntimeError, match="authentication failed"):
+            embed_texts(["hello"], max_retries=3)
+
+    # Should NOT have retried — only 1 call.
+    assert mock_client.embed.call_count == 1
+
+
+def test_embed_texts_none_value_raises():
+    """Non-string values in texts list should raise TypeError."""
+    with pytest.raises(TypeError, match="texts\\[1\\] must be str"):
+        embed_texts(["hello", None], max_retries=1)
 
 
 # ---------------------------------------------------------------------------

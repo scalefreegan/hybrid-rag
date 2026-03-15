@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from pointy_rag.converter import (
-    CONVERSION_SYSTEM_PROMPT,
+    MAX_FILE_SIZE,
     convert_to_markdown,
     detect_format,
     extract_text_fallback,
@@ -136,7 +136,7 @@ async def test_convert_to_markdown_agent_success_via_mock(tmp_path):
 
     assert text == agent_md
     assert path is None
-    mock_agent_module.run_conversion_agent.assert_called_once_with(pdf_path)
+    mock_agent_module.run_conversion_agent.assert_called_once_with(str(pdf_path.resolve()))
 
 
 # ---------------------------------------------------------------------------
@@ -182,10 +182,30 @@ async def test_convert_to_markdown_output_file(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Sanity: CONVERSION_SYSTEM_PROMPT is non-empty
+# Path validation
 # ---------------------------------------------------------------------------
 
 
-def test_conversion_system_prompt_exists():
-    assert CONVERSION_SYSTEM_PROMPT
-    assert len(CONVERSION_SYSTEM_PROMPT) > 50
+@pytest.mark.asyncio
+async def test_convert_nonexistent_file(tmp_path):
+    """Raise FileNotFoundError for missing files."""
+    fake = tmp_path / "no_such_file.pdf"
+    with pytest.raises(FileNotFoundError, match="Document not found"):
+        await convert_to_markdown(fake, use_agent=False)
+
+
+def test_extract_password_protected_pdf(tmp_path):
+    """Raise ValueError for encrypted PDFs."""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "secret")
+    pdf_path = tmp_path / "locked.pdf"
+    perm = fitz.PDF_PERM_ACCESSIBILITY
+    encrypt_meth = fitz.PDF_ENCRYPT_AES_256
+    doc.save(str(pdf_path), encryption=encrypt_meth, user_pw="pass", permissions=perm)
+    doc.close()
+
+    with pytest.raises(ValueError, match="password-protected"):
+        extract_text_fallback(pdf_path, DocumentFormat.pdf)

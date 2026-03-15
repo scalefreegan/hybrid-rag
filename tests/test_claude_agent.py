@@ -110,7 +110,7 @@ async def test_run_conversion_agent_prompt():
 
 @pytest.mark.asyncio
 async def test_run_disclosure_agent_prompt():
-    """run_disclosure_agent builds a prompt mentioning the title and level."""
+    """run_disclosure_agent builds a prompt with delimiters and title."""
     proc = _make_proc(stdout=_json_wrapper("summary text"))
 
     with patch("asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
@@ -126,5 +126,32 @@ async def test_run_disclosure_agent_prompt():
     prompt_idx = list(cmd).index("-p") + 1
     prompt = cmd[prompt_idx]
     assert "Annual Report" in prompt
-    # Level 2 should mention "executive summary" or similar
-    assert "level" not in prompt.lower() or "2" in prompt or "standard" in prompt.lower()
+    # Prompt injection defense: document text wrapped in delimiters
+    assert "<document>" in prompt
+    assert "</document>" in prompt
+
+
+@pytest.mark.asyncio
+async def test_run_agent_claude_not_found():
+    """Raise FileNotFoundError with helpful message when claude CLI is missing."""
+    with patch(
+        "asyncio.create_subprocess_exec",
+        side_effect=FileNotFoundError("No such file"),
+    ):
+        with pytest.raises(FileNotFoundError, match="Claude CLI not found"):
+            await run_agent("Do something")
+
+
+@pytest.mark.asyncio
+async def test_run_conversion_agent_no_output_path():
+    """run_conversion_agent without output_path asks for text-only output."""
+    proc = _make_proc(stdout=_json_wrapper("# Markdown"))
+
+    with patch("asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
+        result = await run_conversion_agent("/doc.pdf")
+
+    assert result == "# Markdown"
+    cmd = mock_exec.call_args.args
+    prompt_idx = list(cmd).index("-p") + 1
+    prompt = cmd[prompt_idx]
+    assert "Output ONLY the markdown" in prompt

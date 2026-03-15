@@ -1,5 +1,6 @@
 """Voyage AI embedding client for pointy-rag."""
 
+import threading
 import time
 
 import voyageai
@@ -7,19 +8,34 @@ import voyageai
 from pointy_rag.config import get_settings
 
 _client: voyageai.Client | None = None
+_client_lock = threading.Lock()
+
+# Error substrings that indicate non-retryable auth/permission failures.
+_AUTH_ERROR_PATTERNS = ("401", "403", "unauthorized", "forbidden", "invalid api key")
 
 
 def get_voyage_client() -> voyageai.Client:
-    """Get or create singleton Voyage AI client."""
+    """Get or create singleton Voyage AI client (thread-safe)."""
     global _client
-    if _client is None:
+    if _client is not None:
+        return _client
+    with _client_lock:
+        # Double-check after acquiring lock.
+        if _client is not None:
+            return _client
         settings = get_settings()
         if not settings.voyage_api_key:
             raise RuntimeError(
                 "VOYAGE_API_KEY not set — configure in .env or environment"
             )
         _client = voyageai.Client(api_key=settings.voyage_api_key)
-    return _client
+        return _client
+
+
+def _is_auth_error(exc: Exception) -> bool:
+    """Check if an exception indicates a non-retryable auth failure."""
+    msg = str(exc).lower()
+    return any(p in msg for p in _AUTH_ERROR_PATTERNS)
 
 
 def embed_texts(
@@ -40,10 +56,15 @@ def embed_texts(
         List of embedding vectors (each 1024 floats for voyage-4-lite)
 
     Raises:
-        Exception: If all retry attempts fail
+        RuntimeError: If all retry attempts fail or auth error occurs.
+        TypeError: If texts contains non-string values.
     """
     if not texts:
         return []
+
+    for i, t in enumerate(texts):
+        if not isinstance(t, str):
+            raise TypeError(f"texts[{i}] must be str, got {type(t).__name__}")
 
     client = get_voyage_client()
     all_embeddings: list[list[float]] = []
@@ -59,14 +80,21 @@ def embed_texts(
                 all_embeddings.extend(result.embeddings)
                 break
             except Exception as e:
-                retry_count += 1
                 last_error = e
+                # Don't retry auth errors — they won't succeed on retry.
+                if _is_auth_error(e):
+                    raise RuntimeError(
+                        "Voyage API authentication failed — check VOYAGE_API_KEY"
+                    ) from e
+                retry_count += 1
                 if retry_count < max_retries:
                     wait_time = 2 ** (retry_count - 1)
                     time.sleep(wait_time)
                 else:
-                    msg = f"Failed after {max_retries} retries: {e}"
-                    raise Exception(msg) from last_error
+                    raise RuntimeError(
+                        f"Embedding failed after {max_retries} retries "
+                        f"(batch {i // batch_size + 1})"
+                    ) from last_error
 
     return all_embeddings
 
@@ -80,4 +108,5 @@ def embed_query(query: str, model: str = "voyage-4-lite") -> list[float]:
 def reset_client() -> None:
     """Reset the singleton client (for testing)."""
     global _client
-    _client = None
+    with _client_lock:
+        _client = None

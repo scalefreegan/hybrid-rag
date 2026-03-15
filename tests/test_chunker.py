@@ -148,6 +148,18 @@ def test_chunk_index_sequential():
 
 
 # ---------------------------------------------------------------------------
+# Heading-only document
+# ---------------------------------------------------------------------------
+
+
+def test_heading_only_no_body():
+    """A document with only headings (no body text) returns no chunks."""
+    text = "## Heading One\n\n## Heading Two\n\n## Heading Three"
+    chunks = chunk_markdown(text)
+    assert chunks == []
+
+
+# ---------------------------------------------------------------------------
 # Import smoke-test
 # ---------------------------------------------------------------------------
 

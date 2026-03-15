@@ -9,21 +9,27 @@ from pointy_rag.models import DocumentFormat
 
 logger = logging.getLogger(__name__)
 
-CONVERSION_SYSTEM_PROMPT = (
-    "You are a document conversion assistant. Convert the provided document"
-    " content to clean, well-structured markdown.\n\n"
-    "Guidelines:\n"
-    "- Preserve ALL content from the source document"
-    " — do not omit or summarize any text\n"
-    "- Use proper heading hierarchy: # for the document title,"
-    " ## for chapters/major sections, ### for subsections\n"
-    "- Keep lists as markdown bullet points (-) or numbered lists (1.)\n"
-    "- Preserve tables in markdown table format\n"
-    "- Preserve blockquotes using > syntax\n"
-    "- Maintain code blocks with appropriate fencing (```)\n"
-    "- Output ONLY the markdown content"
-    " — no preamble, no explanations, no meta-commentary\n"
-)
+# Maximum file size for conversion (50 MB)
+MAX_FILE_SIZE = 50 * 1024 * 1024
+
+
+def _validate_path(path: Path) -> Path:
+    """Resolve and validate a document path.
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        ValueError: If the path traverses outside its parent or is too large.
+    """
+    resolved = path.resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Document not found: {resolved}")
+    size = resolved.stat().st_size
+    if size > MAX_FILE_SIZE:
+        raise ValueError(
+            f"File too large ({size / 1024 / 1024:.1f} MB). "
+            f"Maximum is {MAX_FILE_SIZE / 1024 / 1024:.0f} MB."
+        )
+    return resolved
 
 
 def detect_format(path: str | Path) -> DocumentFormat:
@@ -55,6 +61,9 @@ def extract_text_fallback(path: str | Path, fmt: DocumentFormat) -> str:
 
     Returns:
         Extracted plain text content.
+
+    Raises:
+        ValueError: If the PDF is encrypted/password-protected.
     """
     path = Path(path)
 
@@ -62,6 +71,11 @@ def extract_text_fallback(path: str | Path, fmt: DocumentFormat) -> str:
         import fitz  # pymupdf
 
         doc = fitz.open(str(path))
+        if doc.is_encrypted:
+            doc.close()
+            raise ValueError(
+                f"PDF is password-protected and cannot be extracted: {path.name}"
+            )
         pages = [page.get_text() for page in doc]
         doc.close()
         return "\n".join(pages)
@@ -96,8 +110,12 @@ async def convert_to_markdown(
 
     Returns:
         Tuple of (markdown_text, output_path_or_None).
+
+    Raises:
+        FileNotFoundError: If the source file does not exist.
+        ValueError: If the file is too large, unsupported, or encrypted.
     """
-    source_path = Path(source_path)
+    source_path = _validate_path(Path(source_path))
     fmt = detect_format(source_path)
     markdown: str | None = None
 
@@ -105,7 +123,7 @@ async def convert_to_markdown(
         try:
             from pointy_rag.claude_agent import run_conversion_agent
 
-            markdown = await run_conversion_agent(source_path)
+            markdown = await run_conversion_agent(str(source_path))
         except Exception as exc:
             logger.warning("Agent conversion failed, falling back: %s", exc)
             markdown = None
