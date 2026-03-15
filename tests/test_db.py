@@ -86,9 +86,12 @@ def test_get_document_not_found(mock_conn):
 def test_create_tables():
     """Verify create_tables executes each DDL statement individually."""
     mock_conn = MagicMock()
-    with patch("pointy_rag.db.get_connection") as mock_get_conn:
-        mock_get_conn.return_value.__enter__ = lambda _: mock_conn
-        mock_get_conn.return_value.__exit__ = MagicMock(return_value=False)
+    with (
+        patch("pointy_rag.db.psycopg.connect") as mock_connect,
+        patch("pointy_rag.db.register_vector"),
+    ):
+        mock_connect.return_value.__enter__ = lambda _: mock_conn
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
         create_tables("postgresql://localhost/test")
 
     calls = mock_conn.execute.call_args_list
@@ -105,8 +108,8 @@ def test_create_tables():
     # Verify HNSW index (not IVFFlat)
     assert "hnsw" in ddl_sql
     assert "ivfflat" not in ddl_sql
-    # Verify commit
-    mock_conn.commit.assert_called_once()
+    # Verify commit called (extension commit + DDL commit)
+    assert mock_conn.commit.call_count == 2
 
 
 def test_split_ddl():

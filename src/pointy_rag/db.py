@@ -8,6 +8,7 @@ import psycopg
 import psycopg.rows
 import psycopg.sql
 from pgvector.psycopg import register_vector
+from psycopg.types.json import Jsonb
 
 from pointy_rag.models import Chunk, DisclosureDoc, Document
 
@@ -90,8 +91,13 @@ def ensure_database(database_url: str) -> None:
 
 def create_tables(database_url: str | None = None) -> None:
     """Create all tables and indexes idempotently."""
-    with get_connection(database_url) as conn:
+    from pointy_rag.workspace import resolve_database_url
+
+    url = resolve_database_url(database_url)
+    with psycopg.connect(url) as conn:
         conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        conn.commit()
+        register_vector(conn)
         for stmt in _split_ddl(DDL):
             conn.execute(stmt)
         conn.commit()
@@ -113,7 +119,7 @@ def insert_document(doc: Document, conn: psycopg.Connection) -> None:
             doc.title,
             doc.format.value,
             doc.source_path,
-            doc.metadata,
+            Jsonb(doc.metadata),
             doc.created_at,
         ),
     )
@@ -151,7 +157,7 @@ def insert_chunk(chunk: Chunk, conn: psycopg.Connection) -> None:
             chunk.disclosure_doc_id,
             chunk.content,
             chunk.embedding,
-            chunk.metadata,
+            Jsonb(chunk.metadata),
         ),
     )
 
