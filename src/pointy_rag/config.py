@@ -1,6 +1,7 @@
 """Configuration loading for pointy-rag."""
 
 import os
+from functools import lru_cache
 
 from pydantic import BaseModel
 
@@ -12,6 +13,7 @@ class Settings(BaseModel):
     database_url: str = DEFAULT_DATABASE_URL
 
 
+@lru_cache(maxsize=1)
 def get_settings() -> Settings:
     from dotenv import load_dotenv
 

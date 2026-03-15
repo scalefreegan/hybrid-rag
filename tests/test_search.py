@@ -9,6 +9,7 @@ from pointy_rag.models import (
     DisclosureLevel,
 )
 from pointy_rag.search import (
+    batch_children_counts,
     get_children,
     get_disclosure_content,
     get_parent_chain,
@@ -169,6 +170,23 @@ class TestGetChildren:
         mock_conn.cursor.return_value = cursor
 
         assert get_children("leaf1", mock_conn) == []
+
+
+class TestBatchChildrenCounts:
+    def test_returns_counts(self, mock_conn):
+        cursor = MagicMock()
+        cursor.execute.return_value = cursor
+        cursor.fetchall.return_value = [
+            {"parent_id": "p1", "cnt": 3},
+            {"parent_id": "p2", "cnt": 1},
+        ]
+        mock_conn.cursor.return_value = cursor
+
+        result = batch_children_counts(["p1", "p2", "p3"], mock_conn)
+        assert result == {"p1": 3, "p2": 1}
+
+    def test_empty_ids(self, mock_conn):
+        assert batch_children_counts([], mock_conn) == {}
 
 
 class TestGetParentChain:

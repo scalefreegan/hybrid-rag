@@ -125,14 +125,12 @@ def extract_text_fallback(path: str | Path, fmt: DocumentFormat) -> str:
     if fmt == DocumentFormat.pdf:
         import fitz  # pymupdf
 
-        doc = fitz.open(str(path))
-        if doc.is_encrypted:
-            doc.close()
-            raise ValueError(
-                f"PDF is password-protected and cannot be extracted: {path.name}"
-            )
-        pages = [page.get_text() for page in doc]
-        doc.close()
+        with fitz.open(str(path)) as doc:
+            if doc.is_encrypted:
+                raise ValueError(
+                    f"PDF is password-protected and cannot be extracted: {path.name}"
+                )
+            pages = [page.get_text() for page in doc]
         return "\n".join(pages)
 
     if fmt == DocumentFormat.epub:

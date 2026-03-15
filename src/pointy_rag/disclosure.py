@@ -166,36 +166,50 @@ async def generate_disclosure_hierarchy(
         return []
 
     # --- Level 1: agent produces resource index from all L2 summaries ---
-    combined_l2 = "\n\n".join(
-        f"## {d.title}\n{d.content}" for d in level2_docs
-    )
-    resource_index_text = await run_disclosure_agent(
-        text=combined_l2,
-        title=title,
-        level=1,
-    )
-    level1_doc = DisclosureDoc(
-        document_id=document_id,
-        level=DisclosureLevel.resource_index,
-        title=title,
-        content=resource_index_text,
-        ordering=0,
-    )
+    level1_doc: DisclosureDoc | None = None
+    try:
+        combined_l2 = "\n\n".join(
+            f"## {d.title}\n{d.content}" for d in level2_docs
+        )
+        resource_index_text = await run_disclosure_agent(
+            text=combined_l2,
+            title=title,
+            level=1,
+        )
+        level1_doc = DisclosureDoc(
+            document_id=document_id,
+            level=DisclosureLevel.resource_index,
+            title=title,
+            content=resource_index_text,
+            ordering=0,
+        )
+    except Exception as exc:
+        _log.warning(
+            "L1 resource index failed for document %s, "
+            "persisting L2/L3 without parent: %s",
+            document_id,
+            exc,
+        )
 
     # --- Set parent_id links ---
     for l2, l3 in zip(level2_docs, successful_l3_docs, strict=True):
         l3.parent_id = l2.id
-        l2.parent_id = level1_doc.id
+        if level1_doc is not None:
+            l2.parent_id = level1_doc.id
 
     # --- Persist to database ---
-    insert_disclosure_doc(level1_doc, conn)
+    if level1_doc is not None:
+        insert_disclosure_doc(level1_doc, conn)
     for l2 in level2_docs:
         insert_disclosure_doc(l2, conn)
     for l3 in successful_l3_docs:
         insert_disclosure_doc(l3, conn)
     conn.commit()
 
-    return [level1_doc, *level2_docs, *successful_l3_docs]
+    all_docs = [*level2_docs, *successful_l3_docs]
+    if level1_doc is not None:
+        all_docs.insert(0, level1_doc)
+    return all_docs
 
 
 async def regenerate_library_catalog(

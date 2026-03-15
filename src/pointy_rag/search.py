@@ -99,6 +99,31 @@ def search(
     return results
 
 
+def batch_children_counts(
+    disclosure_doc_ids: list[str],
+    conn: psycopg.Connection,
+) -> dict[str, int]:
+    """Get children counts for multiple disclosure docs in one query.
+
+    Returns:
+        Dict mapping disclosure_doc_id -> children count.
+    """
+    if not disclosure_doc_ids:
+        return {}
+    cursor = conn.cursor(row_factory=psycopg.rows.dict_row)
+    # Use ANY(%s) for parameterized IN-list.
+    rows = cursor.execute(
+        """
+        SELECT parent_id, COUNT(*) AS cnt
+        FROM disclosure_docs
+        WHERE parent_id = ANY(%s)
+        GROUP BY parent_id
+        """,
+        (disclosure_doc_ids,),
+    ).fetchall()
+    return {row["parent_id"]: row["cnt"] for row in rows}
+
+
 def get_disclosure_content(
     disclosure_doc_id: str,
     conn: psycopg.Connection,
@@ -142,14 +167,16 @@ def get_parent_chain(
     rows = cursor.execute(
         """
         WITH RECURSIVE ancestors AS (
-            SELECT id, document_id, parent_id, level, title, content, ordering
+            SELECT id, document_id, parent_id, level, title, content,
+                   ordering, 0 AS depth
             FROM disclosure_docs
             WHERE id = %s
             UNION ALL
             SELECT d.id, d.document_id, d.parent_id, d.level, d.title,
-                   d.content, d.ordering
+                   d.content, d.ordering, a.depth + 1
             FROM disclosure_docs d
             JOIN ancestors a ON d.id = a.parent_id
+            WHERE a.depth < 10
         )
         SELECT id, document_id, parent_id, level, title, content, ordering
         FROM ancestors

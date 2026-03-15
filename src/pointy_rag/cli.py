@@ -135,7 +135,7 @@ def search(
     from rich.table import Table
 
     from pointy_rag.db import get_connection
-    from pointy_rag.search import get_children
+    from pointy_rag.search import batch_children_counts
     from pointy_rag.search import search as do_search
 
     try:
@@ -154,6 +154,13 @@ def search(
                 console.print("[yellow]No results found.[/]")
                 return
 
+            # Batch-fetch children counts in one query.
+            ddoc_ids = [
+                r.disclosure_doc.id
+                for r in results if r.disclosure_doc
+            ]
+            children_counts = batch_children_counts(ddoc_ids, conn)
+
             table = Table(title=f"Search: {query!r}")
             table.add_column("Score", style="cyan", width=6)
             table.add_column("Document", style="green")
@@ -171,7 +178,7 @@ def search(
                 ddoc_title = ddoc.title if ddoc else "\u2014"
                 ddoc_level = str(ddoc.level) if ddoc else "\u2014"
                 children_count = (
-                    len(get_children(ddoc.id, conn))
+                    children_counts.get(ddoc.id, 0)
                     if ddoc else 0
                 )
                 row = [

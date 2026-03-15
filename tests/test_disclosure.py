@@ -213,6 +213,35 @@ class TestGenerateDisclosureHierarchy:
     @pytest.mark.asyncio
     @patch("pointy_rag.disclosure.run_disclosure_agent", new_callable=AsyncMock)
     @patch("pointy_rag.disclosure.insert_disclosure_doc")
+    async def test_l1_failure_preserves_l2_l3(
+        self, mock_insert, mock_agent, mock_conn, sample_markdown
+    ):
+        """L1 failure should still persist L2 and L3 docs."""
+        # L2 calls succeed (3), L1 call (4th) fails.
+        mock_agent.side_effect = [
+            "Summary A",
+            "Summary B",
+            "Summary C",
+            RuntimeError("L1 agent timeout"),
+        ]
+
+        result = await generate_disclosure_hierarchy(
+            "doc1", sample_markdown, "Test Doc", mock_conn
+        )
+
+        # 3 L2 + 3 L3 = 6 docs (no L1)
+        assert len(result) == 6
+        levels = [d.level for d in result]
+        assert levels.count(DisclosureLevel.resource_index) == 0
+        assert levels.count(DisclosureLevel.section_summary) == 3
+        assert levels.count(DisclosureLevel.detailed_passage) == 3
+        # 6 inserts (no L1), commit still called
+        assert mock_insert.call_count == 6
+        mock_conn.commit.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("pointy_rag.disclosure.run_disclosure_agent", new_callable=AsyncMock)
+    @patch("pointy_rag.disclosure.insert_disclosure_doc")
     async def test_heading_only_hash_gets_default_title(
         self, mock_insert, mock_agent, mock_conn
     ):
