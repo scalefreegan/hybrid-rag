@@ -151,3 +151,77 @@ def get_document(doc_id: str, conn: psycopg.Connection) -> Document | None:
         metadata=row["metadata"],
         created_at=row["created_at"],
     )
+
+
+def get_disclosure_doc(
+    ddoc_id: str, conn: psycopg.Connection
+) -> DisclosureDoc | None:
+    row = conn.cursor(row_factory=psycopg.rows.dict_row).execute(
+        "SELECT id, document_id, parent_id, level, title, content, ordering"
+        " FROM disclosure_docs WHERE id = %s",
+        (ddoc_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return DisclosureDoc(
+        id=row["id"],
+        document_id=row["document_id"],
+        parent_id=row["parent_id"],
+        level=row["level"],
+        title=row["title"],
+        content=row["content"],
+        ordering=row["ordering"],
+    )
+
+
+def get_disclosure_docs_by_document(
+    doc_id: str,
+    conn: psycopg.Connection,
+    level: int | None = None,
+) -> list[DisclosureDoc]:
+    if level is not None:
+        rows = conn.cursor(row_factory=psycopg.rows.dict_row).execute(
+            "SELECT id, document_id, parent_id, level, title, content, ordering"
+            " FROM disclosure_docs WHERE document_id = %s AND level = %s"
+            " ORDER BY ordering",
+            (doc_id, level),
+        ).fetchall()
+    else:
+        rows = conn.cursor(row_factory=psycopg.rows.dict_row).execute(
+            "SELECT id, document_id, parent_id, level, title, content, ordering"
+            " FROM disclosure_docs WHERE document_id = %s"
+            " ORDER BY level, ordering",
+            (doc_id,),
+        ).fetchall()
+    return [
+        DisclosureDoc(
+            id=r["id"],
+            document_id=r["document_id"],
+            parent_id=r["parent_id"],
+            level=r["level"],
+            title=r["title"],
+            content=r["content"],
+            ordering=r["ordering"],
+        )
+        for r in rows
+    ]
+
+
+def delete_disclosure_docs_by_level(
+    level: int, conn: psycopg.Connection
+) -> int:
+    """Delete all disclosure docs at a given level. Returns count deleted."""
+    cursor = conn.execute(
+        "DELETE FROM disclosure_docs WHERE level = %s",
+        (int(level),),
+    )
+    return cursor.rowcount
+
+
+def update_disclosure_doc_parent(
+    ddoc_id: str, parent_id: str, conn: psycopg.Connection
+) -> None:
+    conn.execute(
+        "UPDATE disclosure_docs SET parent_id = %s WHERE id = %s",
+        (parent_id, ddoc_id),
+    )

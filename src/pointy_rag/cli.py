@@ -72,29 +72,150 @@ def ingest(
 @app.command()
 def search(
     query: Annotated[str, typer.Argument(help="Search query")],
-    collection: Annotated[
-        str,
-        typer.Option("--collection", "-c", help="Collection to search"),
-    ] = "default",
-    top_k: Annotated[
+    limit: Annotated[
         int,
-        typer.Option("--top-k", "-k", help="Number of results", min=1, max=100),
-    ] = 5,
+        typer.Option("--limit", "-n", help="Number of results", min=1, max=100),
+    ] = 10,
+    threshold: Annotated[
+        float,
+        typer.Option("--threshold", "-t", help="Minimum similarity score"),
+    ] = 0.7,
+    content: Annotated[
+        bool,
+        typer.Option("--content", "-c", help="Show chunk content"),
+    ] = False,
 ):
-    """Search the vector store with hybrid retrieval."""
-    console.print(f"[bold green]search[/] {query!r} k={top_k} (not yet implemented)")
+    """Search the vector store with pointer-based retrieval."""
+    from rich.table import Table
+
+    from pointy_rag.db import get_connection
+    from pointy_rag.search import get_children
+    from pointy_rag.search import search as do_search
+
+    try:
+        with get_connection() as conn:
+            results = do_search(
+                query, conn, limit=limit, threshold=threshold
+            )
+
+            if not results:
+                console.print("[yellow]No results found.[/]")
+                return
+
+            table = Table(title=f"Search: {query!r}")
+            table.add_column("Score", style="cyan", width=6)
+            table.add_column("Document", style="green")
+            table.add_column("Level", width=6)
+            table.add_column("Section", style="bold")
+            table.add_column("Children", width=8)
+            if content:
+                table.add_column("Content", max_width=60)
+
+            for r in results:
+                doc_title = (
+                    r.document.title if r.document else "\u2014"
+                )
+                ddoc = r.disclosure_doc
+                ddoc_title = ddoc.title if ddoc else "\u2014"
+                level = str(ddoc.level) if ddoc else "\u2014"
+                children_count = (
+                    len(get_children(ddoc.id, conn))
+                    if ddoc else 0
+                )
+                row = [
+                    f"{r.score:.3f}",
+                    doc_title,
+                    level,
+                    ddoc_title,
+                    str(children_count),
+                ]
+                if content:
+                    text = r.chunk.content
+                    snippet = (
+                        text[:200] + "..."
+                        if len(text) > 200 else text
+                    )
+                    row.append(snippet)
+                table.add_row(*row)
+
+    except Exception as exc:
+        console.print(f"[bold red]Error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(table)
 
 
 @app.command()
 def drill(
-    query: Annotated[str, typer.Argument(help="Query to drill into")],
-    collection: Annotated[
-        str,
-        typer.Option("--collection", "-c", help="Collection to search"),
-    ] = "default",
+    doc_id: Annotated[str, typer.Argument(help="Disclosure doc ID to drill into")],
+    content: Annotated[
+        bool,
+        typer.Option("--content", "-c", help="Show full content of children"),
+    ] = False,
 ):
-    """Deep-dive retrieval with re-ranking."""
-    console.print(f"[bold green]drill[/] {query!r} (not yet implemented)")
+    """Drill into a disclosure document and view its children."""
+    from rich.panel import Panel
+    from rich.table import Table
+
+    from pointy_rag.db import get_connection
+    from pointy_rag.search import get_children, get_disclosure_content, get_parent_chain
+
+    try:
+        with get_connection() as conn:
+            doc_content = get_disclosure_content(doc_id, conn)
+            if doc_content is None:
+                console.print(
+                    f"[bold red]Error:[/] Doc {doc_id!r} not found."
+                )
+                raise typer.Exit(code=1)
+
+            breadcrumbs = get_parent_chain(doc_id, conn)
+            children = get_children(doc_id, conn)
+
+            # Breadcrumb trail.
+            if breadcrumbs:
+                trail = " > ".join(d.title for d in breadcrumbs)
+                console.print(f"[dim]{trail}[/]")
+
+            console.print(
+                Panel(doc_content, title="Content", border_style="green")
+            )
+
+            if children:
+                table = Table(title="Children")
+                table.add_column("ID", style="cyan", max_width=12)
+                table.add_column("Level", width=6)
+                table.add_column("Title", style="bold")
+                if content:
+                    table.add_column("Content", max_width=60)
+
+                for child in children:
+                    row = [
+                        child["id"][:12],
+                        str(child["level"]),
+                        child["title"],
+                    ]
+                    if content:
+                        cc = get_disclosure_content(
+                            child["id"], conn
+                        ) or ""
+                        snippet = (
+                            cc[:200] + "..."
+                            if len(cc) > 200
+                            else cc
+                        )
+                        row.append(snippet)
+                    table.add_row(*row)
+
+                console.print(table)
+            else:
+                console.print("[dim]No children (leaf node).[/]")
+
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        console.print(f"[bold red]Error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
 
 
 @app.command()
