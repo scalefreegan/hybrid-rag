@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from pointy_rag.converter import (
+    MAX_FILE_SIZE,
     convert_to_markdown,
     detect_format,
     extract_text_fallback,
@@ -202,6 +203,33 @@ async def test_convert_directory_not_file(tmp_path):
     """Raise FileNotFoundError when given a directory."""
     with pytest.raises(FileNotFoundError, match="expected a file"):
         await convert_to_markdown(tmp_path, use_agent=False)
+
+
+# ---------------------------------------------------------------------------
+# MAX_FILE_SIZE limit
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_convert_file_too_large(tmp_path):
+    """Raise ValueError when file size exceeds MAX_FILE_SIZE (50 MB).
+
+    Uses mock to avoid creating a real 50 MB file on disk.
+    """
+    big_file = tmp_path / "big.pdf"
+    big_file.write_bytes(b"placeholder content")
+
+    oversized = MAX_FILE_SIZE + 1 * 1024 * 1024  # 51 MB
+    stat_mock = MagicMock()
+    stat_mock.st_size = oversized
+    stat_mock.st_mode = 0o100644  # regular file — needed by is_file() → S_ISREG()
+
+    with patch.object(Path, "stat", return_value=stat_mock):
+        with pytest.raises(
+            ValueError,
+            match=r"File too large \(51\.0 MB\)\. Maximum is 50 MB\.",
+        ):
+            await convert_to_markdown(big_file, use_agent=False)
 
 
 def test_extract_password_protected_pdf(tmp_path):
