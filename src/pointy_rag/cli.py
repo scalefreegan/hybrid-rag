@@ -20,6 +20,21 @@ app = typer.Typer(
 console = Console()
 
 
+@app.callback()
+def _app_callback(
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", "-w", help="Path to a pointy-rag workspace"),
+    ] = None,
+):
+    """Global options."""
+    from pointy_rag.workspace import find_workspace, set_active_workspace
+
+    ws = find_workspace(workspace)
+    if ws is not None:
+        set_active_workspace(ws)
+
+
 def _mask_url_password(url: str) -> str:
     """Mask the password portion of a database URL."""
     parsed = urlparse(url)
@@ -36,23 +51,50 @@ def _mask_url_password(url: str) -> str:
 
 @app.command()
 def init(
+    path: Annotated[
+        Path | None,
+        typer.Argument(help="Workspace directory (created if needed; default: cwd)"),
+    ] = None,
     database_url: Annotated[
         str | None,
-        typer.Option("--database-url", help="PostgreSQL connection string"),
+        typer.Option(
+            "--database-url",
+            help="PostgreSQL connection string (overrides auto-derivation)",
+        ),
     ] = None,
 ):
-    """Initialize the database: create tables and indexes."""
+    """Initialize a workspace: create directory, database, tables, and marker."""
     from pointy_rag.config import get_settings
-    from pointy_rag.db import create_tables
+    from pointy_rag.db import create_tables, ensure_database
+    from pointy_rag.workspace import (
+        build_database_url,
+        sanitize_db_name,
+        write_workspace_marker,
+    )
 
-    url = database_url or get_settings().database_url
-    console.print(f"[bold]Initializing database:[/] {_mask_url_password(url)}")
+    ws_dir = Path(path).resolve() if path else Path.cwd().resolve()
+
+    if not ws_dir.exists():
+        typer.confirm(f"Directory {ws_dir} does not exist. Create it?", abort=True)
+        ws_dir.mkdir(parents=True)
+
+    if database_url:
+        url = database_url
+    else:
+        db_name = sanitize_db_name(ws_dir.name)
+        base_url = get_settings().database_url
+        url = build_database_url(db_name, base_url)
+
+    console.print(f"[bold]Initializing workspace:[/] {ws_dir}")
+    console.print(f"[bold]Database:[/] {_mask_url_password(url)}")
     try:
+        ensure_database(url)
         create_tables(url)
-        console.print("[bold green]\u2713[/] Tables created successfully.")
+        write_workspace_marker(ws_dir, url)
+        console.print("[bold green]\u2713[/] Workspace initialized successfully.")
     except Exception as exc:
         safe_msg = _mask_url_password(str(exc))
-        console.print(f"[bold red]\u2717[/] Failed to initialize database: {safe_msg}")
+        console.print(f"[bold red]\u2717[/] Failed to initialize workspace: {safe_msg}")
         raise typer.Exit(code=1) from exc
 
 
@@ -63,9 +105,9 @@ def ingest(
         typer.Argument(help="Files to ingest (PDF or EPUB)"),
     ],
     output_dir: Annotated[
-        Path,
+        Path | None,
         typer.Option("--output-dir", "-o", help="Directory for converted markdown"),
-    ] = Path("./converted"),
+    ] = None,
     no_agent: Annotated[
         bool,
         typer.Option("--no-agent", help="Skip Claude agent (fallback, no disclosure)"),
@@ -78,6 +120,11 @@ def ingest(
 
     from pointy_rag.db import get_connection
     from pointy_rag.ingest import ingest_paths
+    from pointy_rag.workspace import get_active_workspace
+
+    if output_dir is None:
+        ws = get_active_workspace()
+        output_dir = ws.converted_dir if ws is not None else Path("./converted")
 
     with Progress(
         SpinnerColumn(),

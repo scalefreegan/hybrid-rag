@@ -6,9 +6,9 @@ from contextlib import contextmanager
 
 import psycopg
 import psycopg.rows
+import psycopg.sql
 from pgvector.psycopg import register_vector
 
-from pointy_rag.config import get_settings
 from pointy_rag.models import Chunk, DisclosureDoc, Document
 
 DDL = """
@@ -61,10 +61,31 @@ def _split_ddl(ddl: str) -> list[str]:
 def get_connection(
     database_url: str | None = None,
 ) -> Generator[psycopg.Connection, None, None]:
-    url = database_url or get_settings().database_url
+    from pointy_rag.workspace import resolve_database_url
+
+    url = resolve_database_url(database_url)
     with psycopg.connect(url) as conn:
         register_vector(conn)
         yield conn
+
+
+def ensure_database(database_url: str) -> None:
+    """Create the PostgreSQL database if it does not already exist."""
+    from urllib.parse import urlparse, urlunparse
+
+    parsed = urlparse(database_url)
+    db_name = parsed.path.lstrip("/")
+    maintenance_url = urlunparse(parsed._replace(path="/postgres"))
+    with psycopg.connect(maintenance_url, autocommit=True) as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM pg_database WHERE datname = %s", (db_name,)
+        ).fetchone()
+        if not exists:
+            conn.execute(
+                psycopg.sql.SQL("CREATE DATABASE {}").format(
+                    psycopg.sql.Identifier(db_name)
+                )
+            )
 
 
 def create_tables(database_url: str | None = None) -> None:

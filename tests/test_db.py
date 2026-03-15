@@ -120,13 +120,15 @@ def test_split_ddl():
         assert not stmt.endswith(";;"), f"Double semicolon: {stmt!r}"
 
 
-def test_get_settings_used_for_connection():
-    """Verify get_connection uses get_settings when no URL provided."""
+def test_resolve_database_url_used_for_connection():
+    """Verify get_connection uses resolve_database_url when no URL provided."""
     with (
-        patch("pointy_rag.db.get_settings") as mock_settings,
+        patch(
+            "pointy_rag.workspace.resolve_database_url",
+            return_value="postgresql://from-settings/db",
+        ),
         patch("pointy_rag.db.psycopg.connect") as mock_connect,
     ):
-        mock_settings.return_value.database_url = "postgresql://from-settings/db"
         mock_ctx = MagicMock()
         mock_connect.return_value.__enter__ = lambda _: mock_ctx
         mock_connect.return_value.__exit__ = MagicMock(return_value=False)
@@ -136,3 +138,40 @@ def test_get_settings_used_for_connection():
             with get_connection() as _conn:
                 pass
         mock_connect.assert_called_once_with("postgresql://from-settings/db")
+
+
+def test_ensure_database_creates_when_missing():
+    """ensure_database issues CREATE DATABASE when DB doesn't exist."""
+    mock_conn = MagicMock()
+    mock_conn.execute.return_value.fetchone.return_value = None
+    with patch("pointy_rag.db.psycopg.connect") as mock_connect:
+        mock_connect.return_value.__enter__ = lambda _: mock_conn
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        from pointy_rag.db import ensure_database
+
+        ensure_database("postgresql://localhost:5432/new_db")
+    # Should have called execute twice: SELECT + CREATE DATABASE
+    assert mock_conn.execute.call_count == 2
+    create_call = mock_conn.execute.call_args_list[1]
+    composed = create_call[0][0]
+    # Verify it's a psycopg.sql.Composed object containing the DB name
+    import psycopg.sql
+
+    assert isinstance(composed, psycopg.sql.Composed)
+    # Check that SELECT used the right db name
+    select_call = mock_conn.execute.call_args_list[0]
+    assert select_call[0][1] == ("new_db",)
+
+
+def test_ensure_database_noop_when_exists():
+    """ensure_database skips CREATE when database already exists."""
+    mock_conn = MagicMock()
+    mock_conn.execute.return_value.fetchone.return_value = (1,)
+    with patch("pointy_rag.db.psycopg.connect") as mock_connect:
+        mock_connect.return_value.__enter__ = lambda _: mock_conn
+        mock_connect.return_value.__exit__ = MagicMock(return_value=False)
+        from pointy_rag.db import ensure_database
+
+        ensure_database("postgresql://localhost:5432/existing_db")
+    # Only the SELECT check — no CREATE
+    assert mock_conn.execute.call_count == 1
