@@ -71,6 +71,28 @@ def create_contains_edge(
     conn.execute(_cypher_sql(cypher), (GRAPH_NAME,))  # noqa: S608
 
 
+def merge_contains_edge(
+    parent_id: str, child_id: str, ordering: int, conn: psycopg.Connection
+) -> None:
+    """Idempotent CONTAINS edge creation using MERGE (safe for backfill re-runs)."""
+    cypher = (
+        f"MATCH (parent {{node_id: '{_esc(parent_id)}'}}), "
+        f"(child {{node_id: '{_esc(child_id)}'}}) "
+        f"MERGE (parent)-[r:CONTAINS]->(child) "
+        f"ON CREATE SET r.ordering = {ordering}"
+    )
+    conn.execute(_cypher_sql(cypher), (GRAPH_NAME,))  # noqa: S608
+
+
+def node_exists(node_id: str, conn: psycopg.Connection) -> bool:
+    """Return True if a node with the given node_id already exists in the graph."""
+    row = conn.execute(
+        _cypher_sql(f"MATCH (n {{node_id: '{_esc(node_id)}'}}) RETURN count(n)"),
+        (GRAPH_NAME,),
+    ).fetchone()
+    return bool(row and int(row[0]) > 0)
+
+
 def create_similar_to_edges(
     chunk: Chunk,
     conn: psycopg.Connection,

@@ -10,6 +10,8 @@ from pointy_rag.graph import (
     delete_document_graph_data,
     ensure_graph,
     get_graph_stats,
+    merge_contains_edge,
+    node_exists,
 )
 from pointy_rag.models import Chunk, DisclosureDoc, DisclosureLevel
 
@@ -151,3 +153,52 @@ def test_get_graph_stats_empty_graph(mock_conn):
     stats = get_graph_stats(mock_conn)
     assert stats["node_count"] == 0
     assert stats["edge_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# merge_contains_edge
+# ---------------------------------------------------------------------------
+
+
+def test_merge_contains_edge(mock_conn):
+    merge_contains_edge("parent-1", "child-1", 2, mock_conn)
+    mock_conn.execute.assert_called_once()
+    sql, params = mock_conn.execute.call_args[0]
+    assert "ag_catalog.cypher" in sql
+    assert "MERGE" in sql
+    assert "CONTAINS" in sql
+    assert "parent-1" in sql
+    assert "child-1" in sql
+    assert "2" in sql
+    assert GRAPH_NAME in params
+
+
+def test_merge_contains_edge_uses_merge_not_create(mock_conn):
+    merge_contains_edge("p", "c", 0, mock_conn)
+    sql, _ = mock_conn.execute.call_args[0]
+    # MERGE pattern, not a bare CREATE
+    assert "MERGE" in sql
+    assert "CREATE (p" not in sql  # no bare CREATE edge statement
+
+
+# ---------------------------------------------------------------------------
+# node_exists
+# ---------------------------------------------------------------------------
+
+
+def test_node_exists_true(mock_conn):
+    mock_conn.execute.return_value.fetchone.return_value = (1,)
+    assert node_exists("chunk-1", mock_conn) is True
+    sql, params = mock_conn.execute.call_args[0]
+    assert "chunk-1" in sql
+    assert GRAPH_NAME in params
+
+
+def test_node_exists_false_zero(mock_conn):
+    mock_conn.execute.return_value.fetchone.return_value = (0,)
+    assert node_exists("chunk-99", mock_conn) is False
+
+
+def test_node_exists_false_none(mock_conn):
+    mock_conn.execute.return_value.fetchone.return_value = None
+    assert node_exists("chunk-99", mock_conn) is False

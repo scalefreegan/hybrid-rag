@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 from pointy_rag.db import (
     _split_ddl,
     create_tables,
+    get_chunks_by_document,
     get_document,
     insert_chunk,
     insert_disclosure_doc,
@@ -81,6 +82,46 @@ def test_get_document_not_found(mock_conn):
     mock_conn.cursor.return_value = mock_cursor
     doc = get_document("nonexistent", mock_conn)
     assert doc is None
+
+
+def test_get_chunks_by_document(mock_conn):
+    mock_cursor = MagicMock()
+    mock_cursor.execute.return_value.fetchall.return_value = [
+        {
+            "id": "chunk-1",
+            "disclosure_doc_id": "ddoc-1",
+            "content": "First chunk.",
+            "embedding": [0.1] * 1024,
+            "metadata": {},
+        },
+        {
+            "id": "chunk-2",
+            "disclosure_doc_id": "ddoc-1",
+            "content": "Second chunk.",
+            "embedding": None,
+            "metadata": {"key": "val"},
+        },
+    ]
+    mock_conn.cursor.return_value = mock_cursor
+    chunks = get_chunks_by_document("doc-1", mock_conn)
+    assert len(chunks) == 2
+    assert chunks[0].id == "chunk-1"
+    assert chunks[0].disclosure_doc_id == "ddoc-1"
+    assert chunks[0].content == "First chunk."
+    assert chunks[1].id == "chunk-2"
+    assert chunks[1].embedding is None
+    # Verify the SQL JOIN through disclosure_docs
+    sql = mock_cursor.execute.call_args[0][0]
+    assert "disclosure_docs" in sql
+    assert "document_id" in sql
+
+
+def test_get_chunks_by_document_empty(mock_conn):
+    mock_cursor = MagicMock()
+    mock_cursor.execute.return_value.fetchall.return_value = []
+    mock_conn.cursor.return_value = mock_cursor
+    chunks = get_chunks_by_document("doc-empty", mock_conn)
+    assert chunks == []
 
 
 def test_create_tables():

@@ -315,6 +315,31 @@ def delete_document_data(doc_id: str, conn: psycopg.Connection) -> None:
     conn.execute("DELETE FROM documents WHERE id = %s", (doc_id,))
 
 
+def get_chunks_by_document(doc_id: str, conn: psycopg.Connection) -> list[Chunk]:
+    """Fetch all chunks for a document via JOIN through disclosure_docs."""
+    rows = (
+        conn.cursor(row_factory=psycopg.rows.dict_row)
+        .execute(
+            "SELECT c.id, c.disclosure_doc_id, c.content, c.embedding, c.metadata"
+            " FROM chunks c"
+            " JOIN disclosure_docs dd ON c.disclosure_doc_id = dd.id"
+            " WHERE dd.document_id = %s",
+            (doc_id,),
+        )
+        .fetchall()
+    )
+    return [
+        Chunk(
+            id=r["id"],
+            disclosure_doc_id=r["disclosure_doc_id"],
+            content=r["content"],
+            embedding=r["embedding"],
+            metadata=r["metadata"],
+        )
+        for r in rows
+    ]
+
+
 def list_documents(conn: psycopg.Connection) -> list[dict]:
     """List all ingested documents with chunk counts."""
     return (
