@@ -101,6 +101,12 @@ def create_tables(database_url: str | None = None) -> None:
         for stmt in _split_ddl(DDL):
             conn.execute(stmt)
         conn.commit()
+        from pointy_rag.config import get_settings
+
+        if get_settings().kg_enabled:
+            from pointy_rag.graph import ensure_graph
+
+            ensure_graph(conn)
 
 
 def insert_document(doc: Document, conn: psycopg.Connection) -> None:
