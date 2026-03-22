@@ -59,3 +59,12 @@ class GraphSearchResult(BaseModel):
     reference_document: str  # Assembled llms.txt markdown
     node_count: int  # Nodes in context subgraph
     edge_count: int  # Edges traversed
+
+
+class ExploreResult(BaseModel):
+    vector_results: list[SearchResult]  # Original pgvector matches
+    overview: str  # Layer 1: compact structured index
+    llms_txt: str  # Layer 2: detailed navigational TOC
+    contents: dict[str, str]  # Layer 3: node_id -> full content markdown
+    node_count: int  # Nodes in context subgraph
+    edge_count: int  # Edges traversed
