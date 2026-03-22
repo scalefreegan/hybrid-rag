@@ -28,7 +28,7 @@ class PreparedSubgraph(NamedTuple):
 def _heading_hashes(level: int | None) -> str:
     """Return markdown heading prefix for a disclosure level."""
     n = (int(level) if level is not None else 0) + 1
-    return "#" * min(n, 6)
+    return "#" * max(min(n, 6), 1)
 
 
 def _resolve_doc_title(doc_id: str, conn: psycopg.Connection) -> str:
@@ -36,7 +36,10 @@ def _resolve_doc_title(doc_id: str, conn: psycopg.Connection) -> str:
     if not doc_id:
         return doc_id
     doc = db.get_document(doc_id, conn)
-    return doc.title if doc else doc_id
+    if doc is None:
+        logger.warning("Document not found for doc_id=%s, using ID as title", doc_id)
+        return doc_id
+    return doc.title
 
 
 def _blockquote(text: str) -> str:
@@ -221,7 +224,9 @@ def _prepare_subgraph(
     Returns:
         (nodes_index, match_ids, similar_ids, hierarchy, root_ids)
     """
-    nodes_index: dict[str, dict] = {n["node_id"]: n for n in subgraph.get("nodes", [])}
+    nodes_index: dict[str, dict] = {
+        n["node_id"]: n for n in subgraph.get("nodes", []) if n.get("node_id")
+    }
     match_ids: set[str] = set(subgraph.get("matches", []))
     hierarchy: dict[str, list[str]] = subgraph.get("hierarchy", {})
     edges: list[dict] = subgraph.get("edges", [])
@@ -476,13 +481,15 @@ def assemble_explore_contents(
         doc_id = node.get("document_id") or ""
         doc_title = _resolve_doc_title(doc_id, conn)
 
-        # YAML frontmatter
+        # YAML frontmatter — escape quotes to prevent injection
+        safe_title = title.replace('"', '\\"')
+        safe_doc_title = doc_title.replace('"', '\\"')
         fm_lines = [
             "---",
             f"node_id: {node_id}",
-            f'title: "{title}"',
+            f'title: "{safe_title}"',
             f"level: {_level_label(raw_level)}",
-            f'document: "{doc_title}"',
+            f'document: "{safe_doc_title}"',
             f"role: {role}",
             "---",
         ]

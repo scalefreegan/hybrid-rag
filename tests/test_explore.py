@@ -2,11 +2,15 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from pointy_rag.llms_txt import (
     _ancestor_chain,
     _build_child_to_parent,
+    _heading_hashes,
     _level_label,
     _node_role,
+    _resolve_doc_title,
     _snippet,
     assemble_explore,
     assemble_explore_contents,
@@ -753,3 +757,142 @@ def test_contents_empty_subgraph(mock_conn):
     sg = _subgraph(nodes=[], matches=[], hierarchy={})
     result = assemble_explore_contents(sg, mock_conn)
     assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# _heading_hashes edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_heading_hashes_level_0():
+    assert _heading_hashes(0) == "#"
+
+
+def test_heading_hashes_level_3():
+    assert _heading_hashes(3) == "####"
+
+
+def test_heading_hashes_none():
+    assert _heading_hashes(None) == "#"
+
+
+def test_heading_hashes_clamps_max_at_6():
+    assert _heading_hashes(10) == "######"
+
+
+def test_heading_hashes_negative_clamps_to_1():
+    """Negative levels must still produce at least '#'."""
+    assert _heading_hashes(-5) == "#"
+
+
+# ---------------------------------------------------------------------------
+# _resolve_doc_title
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_doc_title_found(mock_conn):
+    doc = _doc("doc-1", "My Book")
+    with patch("pointy_rag.llms_txt.db.get_document", return_value=doc):
+        assert _resolve_doc_title("doc-1", mock_conn) == "My Book"
+
+
+def test_resolve_doc_title_not_found_returns_id(mock_conn):
+    with patch("pointy_rag.llms_txt.db.get_document", return_value=None):
+        assert _resolve_doc_title("doc-missing", mock_conn) == "doc-missing"
+
+
+def test_resolve_doc_title_empty_passthrough(mock_conn):
+    assert _resolve_doc_title("", mock_conn) == ""
+
+
+# ---------------------------------------------------------------------------
+# ExploreResult model validator
+# ---------------------------------------------------------------------------
+
+
+def test_explore_result_both_none_valid():
+    r = ExploreResult(
+        vector_results=[], overview=None, llms_txt=None, node_count=0, edge_count=0
+    )
+    assert r.overview is None
+    assert r.llms_txt is None
+
+
+def test_explore_result_both_set_valid():
+    r = ExploreResult(
+        vector_results=[],
+        overview="ov",
+        llms_txt="llms",
+        node_count=0,
+        edge_count=0,
+    )
+    assert r.overview == "ov"
+
+
+def test_explore_result_overview_only_invalid():
+    with pytest.raises(ValueError, match="overview and llms_txt must both"):
+        ExploreResult(
+            vector_results=[],
+            overview="ov",
+            llms_txt=None,
+            node_count=0,
+            edge_count=0,
+        )
+
+
+def test_explore_result_llms_txt_only_invalid():
+    with pytest.raises(ValueError, match="overview and llms_txt must both"):
+        ExploreResult(
+            vector_results=[],
+            overview=None,
+            llms_txt="llms",
+            node_count=0,
+            edge_count=0,
+        )
+
+
+# ---------------------------------------------------------------------------
+# YAML frontmatter quote escaping
+# ---------------------------------------------------------------------------
+
+
+def test_contents_escapes_quotes_in_title(mock_conn):
+    """Titles with double quotes must not break YAML frontmatter."""
+    sg = _subgraph(
+        nodes=[_node("m1", 'He said "hello"', 1)],
+        matches=["m1"],
+        hierarchy={"m1": []},
+    )
+    ddoc = _ddoc("m1", 'He said "hello"', "content", level=1)
+    with (
+        patch("pointy_rag.llms_txt.db.get_disclosure_doc", return_value=ddoc),
+        patch("pointy_rag.llms_txt.db.get_document", return_value=None),
+    ):
+        result = assemble_explore_contents(sg, mock_conn)
+
+    fm = result["m1"]
+    assert 'title: "He said \\"hello\\""' in fm
+
+
+# ---------------------------------------------------------------------------
+# _prepare_subgraph filters None node_ids
+# ---------------------------------------------------------------------------
+
+
+def test_prepare_subgraph_skips_none_node_id(mock_conn):
+    """Nodes with node_id=None should be silently filtered out."""
+    from pointy_rag.llms_txt import _prepare_subgraph
+
+    sg = _subgraph(
+        nodes=[
+            _node("m1", "Valid", 1),
+            {"node_id": None, "node_type": "disclosure", "level": 0, "title": "Bad"},
+        ],
+        matches=["m1"],
+        hierarchy={"m1": []},
+    )
+    with patch("pointy_rag.llms_txt.db.get_document", return_value=None):
+        prepared = _prepare_subgraph(sg, mock_conn)
+
+    assert "m1" in prepared.nodes_index
+    assert None not in prepared.nodes_index
