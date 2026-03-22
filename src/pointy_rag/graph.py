@@ -14,9 +14,29 @@ def _cypher_sql(cypher: str) -> str:
     return f"SELECT * FROM ag_catalog.cypher(%s, $$ {cypher} $$) AS (v agtype)"  # noqa: S608
 
 
-def _esc(s: str) -> str:
-    """Escape single quotes for Cypher string literals."""
-    return s.replace("'", "\\'")
+def _parse_agtype_int(val: object) -> int:
+    """Parse an AGE agtype integer value.
+
+    AGE returns count() results as agtype strings like "42::bigint".
+    Strip the type annotation before converting to int.
+    """
+    if val is None:
+        return 0
+    s = str(val).split("::")[0].strip()
+    return int(s)
+
+
+def _escape_cypher(s: str) -> str:
+    """Escape a string for use in a Cypher string literal.
+
+    Backslashes are doubled first, then single quotes are doubled.
+    Cypher uses doubled single quotes (not backslash-escaped).
+    """
+    return s.replace("\\", "\\\\").replace("'", "''")
+
+
+# Backward-compatible alias used by graph_query.py
+_esc = _escape_cypher
 
 
 def ensure_graph(conn: psycopg.Connection) -> None:
@@ -88,7 +108,7 @@ def node_exists(node_id: str, conn: psycopg.Connection) -> bool:
         _cypher_sql(f"MATCH (n {{node_id: '{_esc(node_id)}'}}) RETURN count(n)"),
         (GRAPH_NAME,),
     ).fetchone()
-    return bool(row and int(row[0]) > 0)
+    return bool(row and _parse_agtype_int(row[0]) > 0)
 
 
 def create_similar_to_edges(
@@ -121,7 +141,7 @@ def create_similar_to_edges(
     created = 0
     now = datetime.now(UTC).isoformat()
     for row in rows:
-        candidate_id, score = row["id"], row["score"]
+        candidate_id, score = row[0], row[1]
         if score < threshold:
             break
         cypher = (
@@ -142,41 +162,14 @@ def delete_document_graph_data(doc_id: str, conn: psycopg.Connection) -> None:
 
 def get_graph_stats(conn: psycopg.Connection) -> dict:
     """Return counts of nodes and edges in the knowledge graph."""
-    node_count = (
-        conn.execute(
-            _cypher_sql("MATCH (n) RETURN count(n)"),  # noqa: S608
-            (GRAPH_NAME,),
-        ).fetchone()
-        or (0,)
-    )[0]
 
-    edge_count = (
-        conn.execute(
-            _cypher_sql("MATCH ()-[e]->() RETURN count(e)"),  # noqa: S608
-            (GRAPH_NAME,),
-        ).fetchone()
-        or (0,)
-    )[0]
-
-    similar_to_count = (
-        conn.execute(
-            _cypher_sql("MATCH ()-[e:SIMILAR_TO]->() RETURN count(e)"),  # noqa: S608
-            (GRAPH_NAME,),
-        ).fetchone()
-        or (0,)
-    )[0]
-
-    contains_count = (
-        conn.execute(
-            _cypher_sql("MATCH ()-[e:CONTAINS]->() RETURN count(e)"),  # noqa: S608
-            (GRAPH_NAME,),
-        ).fetchone()
-        or (0,)
-    )[0]
+    def _fetch_count(cypher: str) -> int:
+        row = conn.execute(_cypher_sql(cypher), (GRAPH_NAME,)).fetchone()  # noqa: S608
+        return _parse_agtype_int(row[0]) if row else 0
 
     return {
-        "node_count": node_count,
-        "edge_count": edge_count,
-        "similar_to_count": similar_to_count,
-        "contains_count": contains_count,
+        "node_count": _fetch_count("MATCH (n) RETURN count(n)"),
+        "edge_count": _fetch_count("MATCH ()-[e]->() RETURN count(e)"),
+        "similar_to_count": _fetch_count("MATCH ()-[e:SIMILAR_TO]->() RETURN count(e)"),
+        "contains_count": _fetch_count("MATCH ()-[e:CONTAINS]->() RETURN count(e)"),
     }

@@ -4,9 +4,12 @@ from unittest.mock import MagicMock, patch
 
 from pointy_rag.graph import (
     GRAPH_NAME,
+    _escape_cypher,
+    _parse_agtype_int,
     create_chunk_node,
     create_contains_edge,
     create_disclosure_node,
+    create_similar_to_edges,
     delete_document_graph_data,
     ensure_graph,
     get_graph_stats,
@@ -81,8 +84,8 @@ def test_create_disclosure_node_escapes_quotes(mock_conn):
     )
     create_disclosure_node(ddoc, mock_conn)
     sql, _ = mock_conn.execute.call_args[0]
-    # Single quote in title should be escaped
-    assert "It\\'s a title" in sql
+    # Single quote in title should be doubled (Cypher style), not backslash-escaped
+    assert "It''s a title" in sql
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +141,7 @@ def test_delete_document_graph_data(mock_conn):
 
 
 def test_get_graph_stats(mock_conn):
-    mock_conn.execute.return_value.fetchone.return_value = (42,)
+    mock_conn.execute.return_value.fetchone.return_value = ("42::bigint",)
     stats = get_graph_stats(mock_conn)
     assert stats["node_count"] == 42
     assert stats["edge_count"] == 42
@@ -186,7 +189,7 @@ def test_merge_contains_edge_uses_merge_not_create(mock_conn):
 
 
 def test_node_exists_true(mock_conn):
-    mock_conn.execute.return_value.fetchone.return_value = (1,)
+    mock_conn.execute.return_value.fetchone.return_value = ("1::bigint",)
     assert node_exists("chunk-1", mock_conn) is True
     sql, params = mock_conn.execute.call_args[0]
     assert "chunk-1" in sql
@@ -194,10 +197,146 @@ def test_node_exists_true(mock_conn):
 
 
 def test_node_exists_false_zero(mock_conn):
-    mock_conn.execute.return_value.fetchone.return_value = (0,)
+    mock_conn.execute.return_value.fetchone.return_value = ("0::bigint",)
     assert node_exists("chunk-99", mock_conn) is False
 
 
 def test_node_exists_false_none(mock_conn):
     mock_conn.execute.return_value.fetchone.return_value = None
     assert node_exists("chunk-99", mock_conn) is False
+
+
+def test_node_exists_agtype_string(mock_conn):
+    """node_exists must handle agtype strings like '1::bigint'."""
+    mock_conn.execute.return_value.fetchone.return_value = ("1::bigint",)
+    assert node_exists("chunk-1", mock_conn) is True
+
+
+# ---------------------------------------------------------------------------
+# _escape_cypher
+# ---------------------------------------------------------------------------
+
+
+def test_escape_cypher_single_quote():
+    assert _escape_cypher("it's") == "it''s"
+
+
+def test_escape_cypher_backslash():
+    assert _escape_cypher("a\\b") == "a\\\\b"
+
+
+def test_escape_cypher_backslash_and_quote():
+    """Backslash must be doubled before quote is doubled."""
+    assert _escape_cypher("\\'") == "\\\\''", "backslash-then-quote must escape both"
+
+
+def test_escape_cypher_plain():
+    assert _escape_cypher("hello") == "hello"
+
+
+# ---------------------------------------------------------------------------
+# _parse_agtype_int
+# ---------------------------------------------------------------------------
+
+
+def test_parse_agtype_int_plain():
+    assert _parse_agtype_int("42") == 42
+
+
+def test_parse_agtype_int_with_annotation():
+    assert _parse_agtype_int("42::bigint") == 42
+
+
+def test_parse_agtype_int_zero_annotation():
+    assert _parse_agtype_int("0::bigint") == 0
+
+
+def test_parse_agtype_int_none():
+    assert _parse_agtype_int(None) == 0
+
+
+def test_parse_agtype_int_integer():
+    assert _parse_agtype_int(7) == 7
+
+
+# ---------------------------------------------------------------------------
+# get_graph_stats agtype
+# ---------------------------------------------------------------------------
+
+
+def test_get_graph_stats_agtype_strings(mock_conn):
+    """get_graph_stats must parse agtype strings returned by AGE."""
+    mock_conn.execute.return_value.fetchone.return_value = ("100::bigint",)
+    stats = get_graph_stats(mock_conn)
+    assert stats["node_count"] == 100
+    assert stats["edge_count"] == 100
+    assert stats["similar_to_count"] == 100
+    assert stats["contains_count"] == 100
+
+
+# ---------------------------------------------------------------------------
+# create_similar_to_edges
+# ---------------------------------------------------------------------------
+
+
+def test_create_similar_to_edges_above_threshold(mock_conn):
+    """Edges are created for neighbors with score >= threshold."""
+    from pointy_rag.models import Chunk
+
+    chunk = Chunk(id="chunk-1", disclosure_doc_id="ddoc-1", content="text")
+    chunk.embedding = [0.1, 0.2]
+
+    # conftest sets execute.return_value = conn, so fetchall() resolves on conn directly
+    mock_conn.fetchall.return_value = [
+        ("neighbor-1", 0.9),
+        ("neighbor-2", 0.7),
+    ]
+
+    # Pass threshold explicitly so get_settings is never called
+    result = create_similar_to_edges(chunk, mock_conn, threshold=0.5)
+    assert result == 2
+
+
+def test_create_similar_to_edges_below_threshold(mock_conn):
+    """No edges are created when all neighbors are below threshold."""
+    from pointy_rag.models import Chunk
+
+    chunk = Chunk(id="chunk-1", disclosure_doc_id="ddoc-1", content="text")
+    chunk.embedding = [0.1, 0.2]
+
+    mock_conn.fetchall.return_value = [
+        ("neighbor-1", 0.3),
+    ]
+
+    result = create_similar_to_edges(chunk, mock_conn, threshold=0.5)
+    assert result == 0
+
+
+def test_create_similar_to_edges_empty_neighbors(mock_conn):
+    """Returns 0 when there are no candidate neighbors."""
+    from pointy_rag.models import Chunk
+
+    chunk = Chunk(id="chunk-1", disclosure_doc_id="ddoc-1", content="text")
+    chunk.embedding = [0.1, 0.2]
+
+    mock_conn.fetchall.return_value = []
+
+    result = create_similar_to_edges(chunk, mock_conn, threshold=0.5)
+    assert result == 0
+
+
+def test_create_similar_to_edges_all_above_threshold(mock_conn):
+    """All neighbors above threshold results in count equal to number of rows."""
+    from pointy_rag.models import Chunk
+
+    chunk = Chunk(id="chunk-x", disclosure_doc_id="ddoc-1", content="text")
+    chunk.embedding = [0.5, 0.5]
+
+    mock_conn.fetchall.return_value = [
+        ("nbr-a", 0.95),
+        ("nbr-b", 0.85),
+        ("nbr-c", 0.75),
+    ]
+
+    result = create_similar_to_edges(chunk, mock_conn, threshold=0.5)
+    assert result == 3
