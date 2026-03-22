@@ -6,6 +6,7 @@ from pathlib import Path
 import psycopg
 
 from pointy_rag.chunker import chunk_markdown
+from pointy_rag.config import get_settings
 from pointy_rag.converter import convert_to_markdown, detect_format
 from pointy_rag.db import (
     delete_document_data,
@@ -69,9 +70,14 @@ async def ingest_document(
     logger.info("Generated %d embeddings", len(embeddings))
 
     # --- Stage 4: Store document (handle re-ingestion) ---
+    settings = get_settings()
     existing = get_document_by_source_path(str(source_path), conn)
     if existing:
         logger.info("Re-ingesting %s — deleting existing data", source_path.name)
+        if settings.kg_enabled:
+            from pointy_rag.graph import delete_document_graph_data
+
+            delete_document_graph_data(existing.id, conn)
         delete_document_data(existing.id, conn)
         conn.commit()
 
@@ -140,6 +146,28 @@ async def ingest_document(
         insert_chunk(chunk, conn)
     conn.commit()
     logger.info("Stored %d chunks for %s", len(mapped_chunks), doc.title)
+
+    # --- Stage 8: Populate knowledge graph ---
+    if settings.kg_enabled:
+        from pointy_rag.graph import (
+            create_chunk_node,
+            create_contains_edge,
+            create_disclosure_node,
+            create_similar_to_edges,
+        )
+
+        for ddoc in disclosure_docs:
+            create_disclosure_node(ddoc, conn)
+            if ddoc.parent_id:
+                create_contains_edge(ddoc.parent_id, ddoc.id, ddoc.ordering, conn)
+        for chunk in mapped_chunks:
+            create_chunk_node(chunk, doc.id, conn)
+            create_contains_edge(chunk.disclosure_doc_id, chunk.id, 0, conn)
+        edge_count = 0
+        for chunk in mapped_chunks:
+            edge_count += create_similar_to_edges(chunk, conn)
+        logger.info("Created %d similarity edges", edge_count)
+        conn.commit()
 
     # --- Regenerate library catalog ---
     if use_agent and disclosure_docs:

@@ -1,5 +1,7 @@
 """Apache AGE graph layer for pointy-rag knowledge graph."""
 
+from datetime import datetime, timezone
+
 import psycopg
 
 from pointy_rag.models import Chunk, DisclosureDoc
@@ -67,6 +69,49 @@ def create_contains_edge(
         f"CREATE (parent)-[:CONTAINS {{ordering: {ordering}}}]->(child)"
     )
     conn.execute(_cypher_sql(cypher), (GRAPH_NAME,))  # noqa: S608
+
+
+def create_similar_to_edges(
+    chunk: Chunk,
+    conn: psycopg.Connection,
+    threshold: float | None = None,
+    max_neighbors: int = 20,
+) -> int:
+    """Create bidirectional SIMILAR_TO edges from chunk to its nearest neighbors.
+
+    Uses pgvector KNN to find similar existing chunks, filters by threshold,
+    and creates edges in both directions. Returns the number of edges created.
+    """
+    from pointy_rag.config import get_settings
+
+    if threshold is None:
+        threshold = get_settings().kg_similarity_threshold
+
+    rows = conn.execute(
+        """
+        SELECT id, 1 - (embedding <=> %s::vector) AS score
+        FROM chunks
+        WHERE embedding IS NOT NULL AND id != %s
+        ORDER BY embedding <=> %s::vector
+        LIMIT %s
+        """,
+        (chunk.embedding, chunk.id, chunk.embedding, max_neighbors),
+    ).fetchall()
+
+    created = 0
+    now = datetime.now(timezone.utc).isoformat()
+    for row in rows:
+        candidate_id, score = row["id"], row["score"]
+        if score < threshold:
+            break
+        cypher = (
+            f"MATCH (a {{node_id: '{_esc(chunk.id)}'}}), "
+            f"(b {{node_id: '{_esc(candidate_id)}'}}) "
+            f"CREATE (a)-[:SIMILAR_TO {{score: {score}, created_at: '{now}'}}]->(b)"
+        )
+        conn.execute(_cypher_sql(cypher), (GRAPH_NAME,))
+        created += 1
+    return created
 
 
 def delete_document_graph_data(doc_id: str, conn: psycopg.Connection) -> None:

@@ -195,6 +195,163 @@ class TestIngestPaths:
         assert len(failed) == 0
 
 
+class TestGraphIntegration:
+    @pytest.mark.asyncio
+    @patch("pointy_rag.ingest.get_settings")
+    @patch("pointy_rag.graph.create_similar_to_edges")
+    @patch("pointy_rag.graph.create_contains_edge")
+    @patch("pointy_rag.graph.create_chunk_node")
+    @patch("pointy_rag.graph.create_disclosure_node")
+    @patch("pointy_rag.ingest.embed_texts")
+    @patch("pointy_rag.ingest.convert_to_markdown", new_callable=AsyncMock)
+    @patch("pointy_rag.ingest.detect_format")
+    @patch("pointy_rag.ingest.get_document_by_source_path")
+    @patch("pointy_rag.ingest.insert_document")
+    @patch("pointy_rag.ingest.insert_chunk")
+    async def test_graph_populated_when_kg_enabled(
+        self,
+        mock_insert_chunk,
+        mock_insert_doc,
+        mock_get_existing,
+        mock_detect,
+        mock_convert,
+        mock_embed,
+        mock_create_disclosure_node,
+        mock_create_chunk_node,
+        mock_create_contains_edge,
+        mock_create_similar_to_edges,
+        mock_get_settings,
+        mock_conn,
+        tmp_pdf,
+    ):
+        from pointy_rag.models import DisclosureDoc, DisclosureLevel
+
+        mock_settings = MagicMock()
+        mock_settings.kg_enabled = True
+        mock_get_settings.return_value = mock_settings
+
+        mock_detect.return_value = DocumentFormat.pdf
+        mock_convert.return_value = ("## Section\nContent here.", None)
+        mock_embed.return_value = [[0.1] * 1024]
+        mock_get_existing.return_value = None
+        mock_create_similar_to_edges.return_value = 2
+
+        ddoc = DisclosureDoc(
+            document_id="doc-id",
+            level=DisclosureLevel.detailed_passage,
+            title="Section",
+            content="Content here.",
+            ordering=0,
+        )
+
+        with patch(
+            "pointy_rag.disclosure.generate_disclosure_hierarchy",
+            new_callable=AsyncMock,
+            return_value=[ddoc],
+        ):
+            with patch(
+                "pointy_rag.pointer_mapper.map_chunks_to_disclosure"
+            ) as mock_map:
+                from pointy_rag.models import Chunk
+
+                chunk = Chunk(
+                    disclosure_doc_id=ddoc.id,
+                    content="Content here.",
+                    embedding=[0.1] * 1024,
+                    metadata={},
+                )
+                mock_map.return_value = [chunk]
+                await ingest_document(tmp_pdf, mock_conn, use_agent=True)
+
+        mock_create_disclosure_node.assert_called_once()
+        mock_create_chunk_node.assert_called_once()
+        mock_create_similar_to_edges.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("pointy_rag.ingest.get_settings")
+    @patch("pointy_rag.ingest.embed_texts")
+    @patch("pointy_rag.ingest.convert_to_markdown", new_callable=AsyncMock)
+    @patch("pointy_rag.ingest.detect_format")
+    @patch("pointy_rag.ingest.get_document_by_source_path")
+    @patch("pointy_rag.ingest.insert_document")
+    @patch("pointy_rag.ingest.insert_chunk")
+    async def test_graph_not_populated_when_kg_disabled(
+        self,
+        mock_insert_chunk,
+        mock_insert_doc,
+        mock_get_existing,
+        mock_detect,
+        mock_convert,
+        mock_embed,
+        mock_get_settings,
+        mock_conn,
+        tmp_pdf,
+    ):
+        mock_settings = MagicMock()
+        mock_settings.kg_enabled = False
+        mock_get_settings.return_value = mock_settings
+
+        mock_detect.return_value = DocumentFormat.pdf
+        mock_convert.return_value = ("## Section\nContent here.", None)
+        mock_embed.return_value = [[0.1] * 1024]
+        mock_get_existing.return_value = None
+
+        with patch("pointy_rag.graph.create_chunk_node") as mock_chunk_node:
+            with patch(
+                "pointy_rag.graph.create_similar_to_edges"
+            ) as mock_similar_to:
+                await ingest_document(tmp_pdf, mock_conn, use_agent=False)
+                mock_chunk_node.assert_not_called()
+                mock_similar_to.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("pointy_rag.ingest.get_settings")
+    @patch("pointy_rag.graph.delete_document_graph_data")
+    @patch("pointy_rag.ingest.embed_texts")
+    @patch("pointy_rag.ingest.convert_to_markdown", new_callable=AsyncMock)
+    @patch("pointy_rag.ingest.detect_format")
+    @patch("pointy_rag.ingest.get_document_by_source_path")
+    @patch("pointy_rag.ingest.insert_document")
+    @patch("pointy_rag.ingest.insert_chunk")
+    @patch("pointy_rag.ingest.delete_document_data")
+    async def test_re_ingestion_cleans_graph_when_kg_enabled(
+        self,
+        mock_delete_data,
+        mock_insert_chunk,
+        mock_insert_doc,
+        mock_get_existing,
+        mock_detect,
+        mock_convert,
+        mock_embed,
+        mock_delete_graph,
+        mock_get_settings,
+        mock_conn,
+        tmp_pdf,
+    ):
+        from pointy_rag.models import Document
+
+        mock_settings = MagicMock()
+        mock_settings.kg_enabled = True
+        mock_get_settings.return_value = mock_settings
+
+        mock_detect.return_value = DocumentFormat.pdf
+        mock_convert.return_value = ("## Section\nContent.", None)
+        mock_embed.return_value = [[0.1] * 1024]
+
+        existing_doc = Document(
+            id="old-id",
+            title="test",
+            format=DocumentFormat.pdf,
+            source_path=str(tmp_pdf.resolve()),
+        )
+        mock_get_existing.return_value = existing_doc
+
+        await ingest_document(tmp_pdf, mock_conn, use_agent=False)
+
+        mock_delete_graph.assert_called_once_with("old-id", mock_conn)
+        mock_delete_data.assert_called_once_with("old-id", mock_conn)
+
+
 class TestDbFunctions:
     def test_delete_document_data(self):
         from pointy_rag.db import delete_document_data
