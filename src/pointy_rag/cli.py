@@ -331,6 +331,77 @@ def graph_search_cmd(
         )
 
 
+@app.command()
+def explore(
+    query: Annotated[str, typer.Argument(help="Search query")],
+    limit: Annotated[
+        int,
+        typer.Option("--limit", "-n", help="Number of results", min=1, max=100),
+    ] = 10,
+    threshold: Annotated[
+        float,
+        typer.Option("--threshold", "-t", help="Minimum similarity score"),
+    ] = 0.6,
+    levels_up: Annotated[
+        int,
+        typer.Option("--levels-up", help="Hierarchy levels to walk up per match"),
+    ] = 3,
+    no_similar: Annotated[
+        bool,
+        typer.Option("--no-similar", help="Skip SIMILAR_TO edge traversal"),
+    ] = False,
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="Output directory"),
+    ] = None,
+):
+    """Explore query results as a three-layer progressive disclosure package."""
+    from pointy_rag.db import get_connection
+    from pointy_rag.search import explore as explore_search
+
+    if output is None:
+        output = Path(f"./explore-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}")
+
+    try:
+        with get_connection() as conn:
+            result = explore_search(
+                query,
+                conn,
+                limit=limit,
+                threshold=threshold,
+                hierarchy_levels_up=levels_up,
+                include_similar=not no_similar,
+            )
+    except Exception as exc:
+        console.print(f"[bold red]Error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(
+        f"[dim]{len(result.vector_results)} vector matches, "
+        f"{result.node_count} nodes in context graph, "
+        f"{result.edge_count} similarity edges[/]"
+    )
+
+    if not result.overview:
+        console.print(
+            "[yellow]No graph context available (KG disabled or no results).[/]"
+        )
+        raise typer.Exit()
+
+    # Write the three-layer package
+    contents_dir = output / "contents"
+    contents_dir.mkdir(parents=True, exist_ok=True)
+
+    (output / "overview.md").write_text(result.overview)
+    (output / "llms.txt").write_text(result.llms_txt)
+
+    for node_id, content in result.contents.items():
+        (contents_dir / f"{node_id}.md").write_text(content)
+
+    n_files = 2 + len(result.contents)
+    console.print(f"Wrote {n_files} files to {output}/")
+
+
 @app.command("graph-status")
 def graph_status():
     """Show knowledge graph statistics."""
