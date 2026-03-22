@@ -196,7 +196,7 @@ def graph_search(
     if not get_settings().kg_enabled or not results:
         return GraphSearchResult(
             vector_results=results,
-            reference_document="",
+            reference_document=None,
             node_count=0,
             edge_count=0,
         )
@@ -207,11 +207,11 @@ def graph_search(
             node_ids, conn, hierarchy_levels_up, include_similar
         )
         reference_document = llms_txt.assemble_reference(subgraph, conn)
-    except Exception:
+    except psycopg.Error:
         logger.warning("Graph expansion failed for graph_search", exc_info=True)
         return GraphSearchResult(
             vector_results=results,
-            reference_document="[Graph expansion failed]",
+            reference_document=None,
             node_count=0,
             edge_count=0,
         )
@@ -249,8 +249,8 @@ def explore(
     if not get_settings().kg_enabled or not results:
         return ExploreResult(
             vector_results=results,
-            overview="",
-            llms_txt="",
+            overview=None,
+            llms_txt=None,
             contents={},
             node_count=0,
             edge_count=0,
@@ -264,12 +264,12 @@ def explore(
         overview, llms_txt_doc, contents = llms_txt.assemble_explore(
             subgraph, conn, query
         )
-    except Exception:
+    except psycopg.Error:
         logger.warning("Graph expansion failed for explore", exc_info=True)
         return ExploreResult(
             vector_results=results,
-            overview="[Graph expansion failed]",
-            llms_txt="",
+            overview=None,
+            llms_txt=None,
             contents={},
             node_count=0,
             edge_count=0,

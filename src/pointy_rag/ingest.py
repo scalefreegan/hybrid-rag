@@ -169,8 +169,10 @@ async def ingest_document(
                 edge_count += create_similar_to_edges(chunk, conn)
             logger.info("Created %d similarity edges", edge_count)
             conn.commit()
-        except Exception as exc:
-            logger.warning("KG population failed (document stored): %s", exc)
+        except psycopg.Error as exc:
+            logger.warning(
+                "KG population failed (document stored): %s", exc, exc_info=True
+            )
             conn.rollback()
 
     # --- Regenerate library catalog ---
@@ -181,7 +183,9 @@ async def ingest_document(
             await regenerate_library_catalog(conn)
             logger.info("Regenerated library catalog")
         except Exception as exc:
-            logger.warning("Library catalog regeneration failed: %s", exc)
+            logger.warning(
+                "Library catalog regeneration failed: %s", exc, exc_info=True
+            )
 
     return doc
 

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlparse, urlunparse
 
+import psycopg
 import typer
 from rich.console import Console
 
@@ -323,7 +324,7 @@ def graph_search_cmd(
         f"{result.edge_count} similarity edges[/]"
     )
 
-    if result.reference_document:
+    if result.reference_document is not None:
         console.print(result.reference_document)
     else:
         console.print(
@@ -382,7 +383,7 @@ def explore(
         f"{result.edge_count} similarity edges[/]"
     )
 
-    if not result.overview:
+    if result.overview is None:
         console.print(
             "[yellow]No graph context available (KG disabled or no results).[/]"
         )
@@ -393,7 +394,8 @@ def explore(
     contents_dir.mkdir(parents=True, exist_ok=True)
 
     (output / "overview.md").write_text(result.overview)
-    (output / "llms.txt").write_text(result.llms_txt)
+    if result.llms_txt is not None:
+        (output / "llms.txt").write_text(result.llms_txt)
 
     for node_id, content in result.contents.items():
         (contents_dir / f"{node_id}.md").write_text(content)
@@ -627,7 +629,7 @@ def graph_backfill():
                                 )
 
                         conn.commit()
-                    except Exception as exc:
+                    except psycopg.Error as exc:
                         console.print(
                             f"[yellow]Warning:[/] Failed to backfill {title}: {exc}"
                         )

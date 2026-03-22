@@ -3,14 +3,40 @@
 from __future__ import annotations
 
 import logging
+from typing import NamedTuple
 
 import psycopg
 import psycopg.rows
 
 from pointy_rag import db
+from pointy_rag.graph_query import SubgraphDict
 from pointy_rag.models import DisclosureLevel
 
 logger = logging.getLogger(__name__)
+
+
+class PreparedSubgraph(NamedTuple):
+    """Pre-computed subgraph data shared across explore assemblers."""
+
+    nodes_index: dict[str, dict]
+    match_ids: set[str]
+    similar_ids: set[str]
+    hierarchy: dict[str, list[str]]
+    root_ids: list[str]
+
+
+def _heading_hashes(level: int | None) -> str:
+    """Return markdown heading prefix for a disclosure level."""
+    n = (int(level) if level is not None else 0) + 1
+    return "#" * min(n, 6)
+
+
+def _resolve_doc_title(doc_id: str, conn: psycopg.Connection) -> str:
+    """Resolve a document's title from its ID, falling back to the ID itself."""
+    if not doc_id:
+        return doc_id
+    doc = db.get_document(doc_id, conn)
+    return doc.title if doc else doc_id
 
 
 def _blockquote(text: str) -> str:
@@ -85,7 +111,7 @@ def _resolve_node_info(node_id: str, conn: psycopg.Connection) -> dict:
     }
 
 
-def assemble_reference(subgraph: dict, conn: psycopg.Connection) -> str:
+def assemble_reference(subgraph: SubgraphDict, conn: psycopg.Connection) -> str:
     """Render a context subgraph as a structured llms.txt markdown reference document.
 
     Takes the subgraph produced by graph_query.build_context_subgraph and emits
@@ -103,26 +129,9 @@ def assemble_reference(subgraph: dict, conn: psycopg.Connection) -> str:
     Returns:
         Structured markdown string ready for use as an llms.txt reference document.
     """
-    nodes_index: dict[str, dict] = {n["node_id"]: n for n in subgraph.get("nodes", [])}
-    match_ids: set[str] = set(subgraph.get("matches", []))
-    hierarchy: dict[str, list[str]] = subgraph.get("hierarchy", {})
-    edges: list[dict] = subgraph.get("edges", [])
-
-    # Similar nodes: targets of SIMILAR_TO edges whose source is a match
-    similar_ids: set[str] = {
-        e["target"]
-        for e in edges
-        if e.get("type") == "SIMILAR_TO" and e.get("source") in match_ids
-    }
-
-    # Match nodes may be absent from subgraph["nodes"] — resolve from PG
-    for nid in match_ids:
-        if nid not in nodes_index:
-            nodes_index[nid] = _resolve_node_info(nid, conn)
-
-    # Root nodes: appear in hierarchy keys but not as any node's child
-    all_children: set[str] = {c for children in hierarchy.values() for c in children}
-    root_ids = [nid for nid in hierarchy if nid not in all_children]
+    nodes_index, match_ids, similar_ids, hierarchy, root_ids = _prepare_subgraph(
+        subgraph, conn
+    )
 
     rendered: set[str] = set()
 
@@ -136,8 +145,7 @@ def assemble_reference(subgraph: dict, conn: psycopg.Connection) -> str:
             return ""
 
         raw_level = node.get("level")
-        level = int(raw_level) if raw_level is not None else 0
-        hashes = "#" * min(level + 1, 6)
+        hashes = _heading_hashes(raw_level)
         title = node.get("title") or node_id
         node_type = node.get("node_type") or "disclosure"
         content = _fetch_node_content(node_id, node_type, conn)
@@ -146,12 +154,7 @@ def assemble_reference(subgraph: dict, conn: psycopg.Connection) -> str:
             header = f"{hashes} Match: {title} [ref:{node_id}]"
             body = content
         elif node_id in similar_ids:
-            doc_id = node.get("document_id") or ""
-            doc_title = doc_id
-            if doc_id:
-                doc = db.get_document(doc_id, conn)
-                if doc:
-                    doc_title = doc.title
+            doc_title = _resolve_doc_title(node.get("document_id") or "", conn)
             header = f"{hashes} Related: {title} [ref:{node_id}]"
             body = f"> From: {doc_title}\n{content}"
         else:
@@ -211,14 +214,8 @@ def _node_role(node_id: str, match_ids: set[str], similar_ids: set[str]) -> str:
 
 
 def _prepare_subgraph(
-    subgraph: dict, conn: psycopg.Connection
-) -> tuple[
-    dict[str, dict],
-    set[str],
-    set[str],
-    dict[str, list[str]],
-    list[str],
-]:
+    subgraph: SubgraphDict, conn: psycopg.Connection
+) -> PreparedSubgraph:
     """Shared subgraph preparation for explore assemblers.
 
     Returns:
@@ -242,7 +239,7 @@ def _prepare_subgraph(
     all_children: set[str] = {c for children in hierarchy.values() for c in children}
     root_ids = [nid for nid in hierarchy if nid not in all_children]
 
-    return nodes_index, match_ids, similar_ids, hierarchy, root_ids
+    return PreparedSubgraph(nodes_index, match_ids, similar_ids, hierarchy, root_ids)
 
 
 def _build_child_to_parent(hierarchy: dict[str, list[str]]) -> dict[str, str]:
@@ -261,9 +258,13 @@ def _ancestor_chain(
 ) -> list[str]:
     """Walk up from node_id, returning ancestor IDs from root to immediate parent."""
     chain: list[str] = []
+    seen: set[str] = set()
     current = node_id
     while current in child_to_parent:
         parent = child_to_parent[current]
+        if parent in seen:
+            break
+        seen.add(parent)
         if parent in nodes_index:
             chain.append(parent)
         current = parent
@@ -277,16 +278,22 @@ def _ancestor_chain(
 
 
 def assemble_explore_overview(
-    subgraph: dict, conn: psycopg.Connection, query: str
+    subgraph: SubgraphDict,
+    conn: psycopg.Connection,
+    query: str,
+    prepared: PreparedSubgraph | None = None,
 ) -> str:
     """Render Layer 1: ultra-compact structured index.
 
     Produces a minimal-token overview for agents with stats, hierarchy as
     indented list items, and pointers to llms.txt and contents/ files.
     """
-    nodes_index, match_ids, similar_ids, hierarchy, root_ids = _prepare_subgraph(
-        subgraph, conn
-    )
+    if prepared is not None:
+        nodes_index, match_ids, similar_ids, hierarchy, root_ids = prepared
+    else:
+        nodes_index, match_ids, similar_ids, hierarchy, root_ids = _prepare_subgraph(
+            subgraph, conn
+        )
 
     doc_ids = {
         n.get("document_id") for n in nodes_index.values() if n.get("document_id")
@@ -323,11 +330,7 @@ def assemble_explore_overview(
         if indent == 0:
             # Root node as ## heading
             doc_id = node.get("document_id") or ""
-            doc_title = title
-            if doc_id:
-                doc = db.get_document(doc_id, conn)
-                if doc:
-                    doc_title = doc.title
+            doc_title = _resolve_doc_title(doc_id, conn) if doc_id else title
             lines.append(f"## {doc_title}")
         else:
             prefix = "  " * (indent - 1) + "- "
@@ -355,16 +358,22 @@ def assemble_explore_overview(
 
 
 def assemble_explore_llms_txt(
-    subgraph: dict, conn: psycopg.Connection, query: str
+    subgraph: SubgraphDict,
+    conn: psycopg.Connection,
+    query: str,
+    prepared: PreparedSubgraph | None = None,
 ) -> str:
     """Render Layer 2: detailed navigational TOC with descriptions and content links.
 
     Hierarchical markdown with heading depths, [ref:] pointers, level labels,
     truncated content, and links to full content files.
     """
-    nodes_index, match_ids, similar_ids, hierarchy, root_ids = _prepare_subgraph(
-        subgraph, conn
-    )
+    if prepared is not None:
+        nodes_index, match_ids, similar_ids, hierarchy, root_ids = prepared
+    else:
+        nodes_index, match_ids, similar_ids, hierarchy, root_ids = _prepare_subgraph(
+            subgraph, conn
+        )
 
     n_matches = len(match_ids)
     doc_ids = {
@@ -392,8 +401,7 @@ def assemble_explore_llms_txt(
             return ""
 
         raw_level = node.get("level")
-        level = int(raw_level) if raw_level is not None else 0
-        hashes = "#" * min(level + 1, 6)
+        hashes = _heading_hashes(raw_level)
         title = node.get("title") or node_id
         node_type = node.get("node_type") or "disclosure"
         content = _fetch_node_content(node_id, node_type, conn)
@@ -404,12 +412,7 @@ def assemble_explore_llms_txt(
         if role == "match":
             header = f"{hashes} Match: {title} [ref:{node_id}]"
         elif role == "related":
-            doc_id = node.get("document_id") or ""
-            doc_title = doc_id
-            if doc_id:
-                doc = db.get_document(doc_id, conn)
-                if doc:
-                    doc_title = doc.title
+            doc_title = _resolve_doc_title(node.get("document_id") or "", conn)
             header = f"{hashes} Related: {title} [ref:{node_id}]"
             label = f"{label} — From: {doc_title}"
         else:
@@ -441,7 +444,9 @@ def assemble_explore_llms_txt(
 
 
 def assemble_explore_contents(
-    subgraph: dict, conn: psycopg.Connection
+    subgraph: SubgraphDict,
+    conn: psycopg.Connection,
+    prepared: PreparedSubgraph | None = None,
 ) -> dict[str, str]:
     """Render Layer 3: full content files with YAML frontmatter and ancestor context.
 
@@ -451,9 +456,12 @@ def assemble_explore_contents(
     Returns:
         Dict mapping node_id to markdown content with YAML frontmatter.
     """
-    nodes_index, match_ids, similar_ids, hierarchy, _root_ids = _prepare_subgraph(
-        subgraph, conn
-    )
+    if prepared is not None:
+        nodes_index, match_ids, similar_ids, hierarchy, _root_ids = prepared
+    else:
+        nodes_index, match_ids, similar_ids, hierarchy, _root_ids = _prepare_subgraph(
+            subgraph, conn
+        )
     child_to_parent = _build_child_to_parent(hierarchy)
 
     contents: dict[str, str] = {}
@@ -466,19 +474,15 @@ def assemble_explore_contents(
 
         # Resolve document title
         doc_id = node.get("document_id") or ""
-        doc_title = doc_id
-        if doc_id:
-            doc = db.get_document(doc_id, conn)
-            if doc:
-                doc_title = doc.title
+        doc_title = _resolve_doc_title(doc_id, conn)
 
         # YAML frontmatter
         fm_lines = [
             "---",
             f"node_id: {node_id}",
-            f"title: {title}",
+            f'title: "{title}"',
             f"level: {_level_label(raw_level)}",
-            f"document: {doc_title}",
+            f'document: "{doc_title}"',
             f"role: {role}",
             "---",
         ]
@@ -493,9 +497,7 @@ def assemble_explore_contents(
             anc_title = anc.get("title") or anc_id
             anc_level = anc.get("level")
             anc_type = anc.get("node_type") or "disclosure"
-            anc_hashes = "#" * min(
-                (int(anc_level) if anc_level is not None else 0) + 1, 6
-            )
+            anc_hashes = _heading_hashes(anc_level)
             anc_content = _fetch_node_content(anc_id, anc_type, conn)
             anc_label = _level_label(anc_level)
             body_parts.append(
@@ -504,7 +506,7 @@ def assemble_explore_contents(
 
         # Own content
         own_content = _fetch_node_content(node_id, node_type, conn)
-        own_hashes = "#" * min((int(raw_level) if raw_level is not None else 0) + 1, 6)
+        own_hashes = _heading_hashes(raw_level)
 
         if role == "related":
             body_parts.append(
@@ -520,14 +522,15 @@ def assemble_explore_contents(
 
 
 def assemble_explore(
-    subgraph: dict, conn: psycopg.Connection, query: str
+    subgraph: SubgraphDict, conn: psycopg.Connection, query: str
 ) -> tuple[str, str, dict[str, str]]:
     """Orchestrate the three-layer explore package assembly.
 
     Returns:
         (overview, llms_txt, contents_dict)
     """
-    overview = assemble_explore_overview(subgraph, conn, query)
-    llms_txt_doc = assemble_explore_llms_txt(subgraph, conn, query)
-    contents = assemble_explore_contents(subgraph, conn)
+    prepared = _prepare_subgraph(subgraph, conn)
+    overview = assemble_explore_overview(subgraph, conn, query, prepared=prepared)
+    llms_txt_doc = assemble_explore_llms_txt(subgraph, conn, query, prepared=prepared)
+    contents = assemble_explore_contents(subgraph, conn, prepared=prepared)
     return overview, llms_txt_doc, contents

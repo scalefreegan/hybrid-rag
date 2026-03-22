@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from pointy_rag.graph import (
     GRAPH_NAME,
     _escape_cypher,
@@ -49,6 +51,20 @@ def test_ensure_graph_idempotent_on_duplicate(mock_conn):
     # Should not raise
     ensure_graph(mock_conn)
     mock_conn.rollback.assert_called_once()
+
+
+def test_ensure_graph_propagates_non_duplicate_errors(mock_conn):
+    """Non-DuplicateSchema errors must propagate, not be silently swallowed."""
+    import psycopg.errors
+
+    def side_effect(sql, *args, **kwargs):
+        if "create_graph" in sql:
+            raise psycopg.errors.InsufficientPrivilege("permission denied")
+        return MagicMock()
+
+    mock_conn.execute.side_effect = side_effect
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        ensure_graph(mock_conn)
 
 
 # ---------------------------------------------------------------------------

@@ -195,6 +195,88 @@ class TestIngestPaths:
         assert len(failed) == 0
 
 
+class TestKgFailureRollback:
+    @pytest.mark.asyncio
+    @patch("pointy_rag.ingest.get_settings")
+    @patch("pointy_rag.graph.create_similar_to_edges")
+    @patch("pointy_rag.graph.create_contains_edge")
+    @patch("pointy_rag.graph.create_chunk_node")
+    @patch("pointy_rag.graph.create_disclosure_node")
+    @patch("pointy_rag.ingest.embed_texts")
+    @patch("pointy_rag.ingest.convert_to_markdown", new_callable=AsyncMock)
+    @patch("pointy_rag.ingest.detect_format")
+    @patch("pointy_rag.ingest.get_document_by_source_path")
+    @patch("pointy_rag.ingest.insert_document")
+    @patch("pointy_rag.ingest.insert_chunk")
+    async def test_kg_failure_returns_doc_and_rolls_back(
+        self,
+        mock_insert_chunk,
+        mock_insert_doc,
+        mock_get_existing,
+        mock_detect,
+        mock_convert,
+        mock_embed,
+        mock_create_disclosure_node,
+        mock_create_chunk_node,
+        mock_create_contains_edge,
+        mock_create_similar_to_edges,
+        mock_get_settings,
+        mock_conn,
+        tmp_pdf,
+    ):
+        """KG failure still returns doc and calls conn.rollback()."""
+        import psycopg
+
+        from pointy_rag.models import DisclosureDoc, DisclosureLevel
+
+        mock_settings = MagicMock()
+        mock_settings.kg_enabled = True
+        mock_get_settings.return_value = mock_settings
+
+        mock_detect.return_value = DocumentFormat.pdf
+        mock_convert.return_value = ("## Section\nContent here.", None)
+        mock_embed.return_value = [[0.1] * 1024]
+        mock_get_existing.return_value = None
+
+        # Make create_disclosure_node raise to simulate KG failure
+        mock_create_disclosure_node.side_effect = psycopg.Error("AGE unavailable")
+
+        ddoc = DisclosureDoc(
+            document_id="doc-id",
+            level=DisclosureLevel.detailed_passage,
+            title="Section",
+            content="Content here.",
+            ordering=0,
+        )
+
+        with (
+            patch(
+                "pointy_rag.disclosure.generate_disclosure_hierarchy",
+                new_callable=AsyncMock,
+                return_value=[ddoc],
+            ),
+            patch(
+                "pointy_rag.pointer_mapper.map_chunks_to_disclosure",
+            ) as mock_map,
+        ):
+            from pointy_rag.models import Chunk
+
+            chunk = Chunk(
+                disclosure_doc_id=ddoc.id,
+                content="Content here.",
+                embedding=[0.1] * 1024,
+                metadata={},
+            )
+            mock_map.return_value = [chunk]
+            doc = await ingest_document(tmp_pdf, mock_conn, use_agent=True)
+
+        # Document should still be returned despite KG failure
+        assert doc is not None
+        assert doc.format == DocumentFormat.pdf
+        # conn.rollback() should have been called due to KG failure
+        mock_conn.rollback.assert_called()
+
+
 class TestGraphIntegration:
     @pytest.mark.asyncio
     @patch("pointy_rag.ingest.get_settings")

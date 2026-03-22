@@ -89,6 +89,98 @@ def test_graph_backfill_no_documents():
     assert "nothing to backfill" in result.output.lower()
 
 
+def test_graph_backfill_continues_on_failure():
+    """graph-backfill should continue processing remaining documents when one fails."""
+    from datetime import UTC, datetime
+
+    import psycopg
+
+    from pointy_rag.config import Settings
+    from pointy_rag.models import Chunk, DisclosureDoc, DisclosureLevel
+
+    mock_conn = MagicMock()
+
+    doc1 = {
+        "id": "doc-1",
+        "title": "Good Book",
+        "format": "pdf",
+        "created_at": datetime.now(UTC),
+    }
+    doc2 = {
+        "id": "doc-2",
+        "title": "Bad Book",
+        "format": "pdf",
+        "created_at": datetime.now(UTC),
+    }
+    doc3 = {
+        "id": "doc-3",
+        "title": "Also Good",
+        "format": "pdf",
+        "created_at": datetime.now(UTC),
+    }
+
+    ddoc = DisclosureDoc(
+        id="ddoc-1",
+        document_id="doc-1",
+        level=DisclosureLevel.section_summary,
+        title="Chapter 1",
+        content="Content.",
+        parent_id=None,
+    )
+    ddoc3 = DisclosureDoc(
+        id="ddoc-3",
+        document_id="doc-3",
+        level=DisclosureLevel.section_summary,
+        title="Chapter 3",
+        content="Content 3.",
+        parent_id=None,
+    )
+    chunk = Chunk(
+        id="chunk-1",
+        disclosure_doc_id="ddoc-1",
+        content="text",
+        embedding=[0.1] * 4,
+    )
+    chunk3 = Chunk(
+        id="chunk-3",
+        disclosure_doc_id="ddoc-3",
+        content="text3",
+        embedding=[0.1] * 4,
+    )
+
+    def get_ddocs(doc_id, conn):
+        if doc_id == "doc-2":
+            raise psycopg.Error("AGE unavailable")
+        return {"doc-1": [ddoc], "doc-3": [ddoc3]}[doc_id]
+
+    with (
+        patch("pointy_rag.config.get_settings", return_value=Settings(kg_enabled=True)),
+        patch("pointy_rag.db.get_connection", return_value=_make_conn_ctx(mock_conn)),
+        patch("pointy_rag.graph.ensure_graph"),
+        patch("pointy_rag.db.list_documents", return_value=[doc1, doc2, doc3]),
+        patch("pointy_rag.db.get_disclosure_docs_by_document", side_effect=get_ddocs),
+        patch(
+            "pointy_rag.db.get_chunks_by_document",
+            side_effect=lambda did, c: {"doc-1": [chunk], "doc-3": [chunk3]}.get(
+                did, []
+            ),
+        ),
+        patch("pointy_rag.graph.node_exists", return_value=False),
+        patch("pointy_rag.graph.create_disclosure_node"),
+        patch("pointy_rag.graph.create_chunk_node"),
+        patch("pointy_rag.graph.merge_contains_edge"),
+        patch("pointy_rag.graph.create_similar_to_edges", return_value=1),
+    ):
+        result = runner.invoke(app, ["graph-backfill"])
+
+    # Should still succeed overall (exit 0)
+    assert result.exit_code == 0
+    # Output should mention the failure
+    assert "Bad Book" in result.output or "Failed" in result.output
+    # conn.commit() should have been called for the two successful documents
+    assert mock_conn.commit.call_count >= 2
+
+
 def test_graph_backfill_processes_documents():
     """graph-backfill creates nodes and edges for each document."""
     from datetime import UTC, datetime

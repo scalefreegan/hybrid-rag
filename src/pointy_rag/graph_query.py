@@ -5,12 +5,22 @@ from __future__ import annotations
 import json
 import logging
 import re
+from typing import Any, TypedDict
 
 import psycopg
 
 from pointy_rag.graph import GRAPH_NAME, _cypher_sql, _esc
 
 logger = logging.getLogger(__name__)
+
+
+class SubgraphDict(TypedDict):
+    """Typed structure returned by build_context_subgraph."""
+
+    nodes: list[dict[str, Any]]
+    edges: list[dict[str, Any]]
+    matches: list[str]
+    hierarchy: dict[str, list[str]]
 
 
 def _cypher_sql_multi(cypher: str, *col_names: str) -> str:
@@ -37,7 +47,7 @@ def _parse_agtype(val: object) -> dict | list | None:
     try:
         return json.loads(s)
     except (json.JSONDecodeError, ValueError):
-        logger.debug("Failed to parse agtype value: %r", val)
+        logger.warning("Failed to parse agtype value: %r", val)
         return None
 
 
@@ -158,7 +168,7 @@ def build_context_subgraph(
     hierarchy_levels_up: int = 1,
     include_similar: bool = True,
     similar_hops: int = 1,
-) -> dict:
+) -> SubgraphDict:
     """Build a context subgraph for a set of matched nodes.
 
     For each matched node:
@@ -235,9 +245,9 @@ def build_context_subgraph(
                     if sim_id not in hierarchy[aid]:
                         hierarchy[aid].append(sim_id)
 
-    return {
-        "nodes": list(all_nodes.values()),
-        "edges": all_edges,
-        "matches": list(match_node_ids),
-        "hierarchy": hierarchy,
-    }
+    return SubgraphDict(
+        nodes=list(all_nodes.values()),
+        edges=all_edges,
+        matches=list(match_node_ids),
+        hierarchy=hierarchy,
+    )

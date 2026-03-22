@@ -189,6 +189,16 @@ def test_ancestor_chain_no_parents():
     assert chain == []
 
 
+def test_ancestor_chain_breaks_on_cycle():
+    """Cycle in hierarchy should not cause infinite loop."""
+    child_to_parent = {"a": "b", "b": "c", "c": "a"}  # cycle: a->b->c->a
+    nodes_index = {"a": {}, "b": {}, "c": {}}
+    result = _ancestor_chain("a", child_to_parent, nodes_index)
+    # Should terminate, not hang. Exact result depends on implementation.
+    assert isinstance(result, list)
+    assert len(result) <= 3  # bounded by number of nodes
+
+
 # ---------------------------------------------------------------------------
 # assemble_explore_overview
 # ---------------------------------------------------------------------------
@@ -467,9 +477,9 @@ def test_contents_has_yaml_frontmatter(mock_conn):
     content = result["m1"]
     assert content.startswith("---\n")
     assert "node_id: m1" in content
-    assert "title: Match Node" in content
+    assert 'title: "Match Node"' in content
     assert "level: L2 section_summary" in content
-    assert "document: My Document" in content
+    assert 'document: "My Document"' in content
     assert "role: match" in content
 
 
@@ -637,8 +647,8 @@ def test_explore_kg_disabled_fallback(mock_conn):
         result = explore_fn("test", mock_conn)
 
     assert isinstance(result, ExploreResult)
-    assert result.overview == ""
-    assert result.llms_txt == ""
+    assert result.overview is None
+    assert result.llms_txt is None
     assert result.contents == {}
 
 
@@ -654,11 +664,13 @@ def test_explore_no_results_fallback(mock_conn):
     ):
         result = explore_fn("test", mock_conn)
 
-    assert result.overview == ""
+    assert result.overview is None
     assert result.contents == {}
 
 
 def test_explore_exception_fallback(mock_conn):
+    import psycopg
+
     from pointy_rag.search import explore as explore_fn
 
     with (
@@ -669,13 +681,13 @@ def test_explore_exception_fallback(mock_conn):
         ),
         patch(
             "pointy_rag.graph_query.build_context_subgraph",
-            side_effect=RuntimeError("boom"),
+            side_effect=psycopg.Error("boom"),
         ),
     ):
         result = explore_fn("test", mock_conn)
 
     assert isinstance(result, ExploreResult)
-    assert result.overview == "[Graph expansion failed]"
+    assert result.overview is None
     assert result.node_count == 0
 
 
