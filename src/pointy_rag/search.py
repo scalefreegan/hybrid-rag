@@ -5,7 +5,13 @@ import psycopg.rows
 
 from pointy_rag.db import get_disclosure_doc
 from pointy_rag.embeddings import embed_query
-from pointy_rag.models import Chunk, DisclosureDoc, Document, SearchResult
+from pointy_rag.models import (
+    Chunk,
+    DisclosureDoc,
+    Document,
+    GraphSearchResult,
+    SearchResult,
+)
 
 
 def search(
@@ -152,6 +158,64 @@ def get_children(
         """,
         (disclosure_doc_id,),
     ).fetchall()
+
+
+def graph_search(
+    query: str,
+    conn: psycopg.Connection,
+    limit: int = 10,
+    threshold: float = 0.7,
+    hierarchy_levels_up: int = 1,
+    include_similar: bool = True,
+) -> GraphSearchResult:
+    """Run vector search then expand results via the knowledge graph.
+
+    Args:
+        query: The search query text.
+        conn: Active database connection.
+        limit: Maximum number of vector results.
+        threshold: Minimum cosine similarity score (0-1).
+        hierarchy_levels_up: How many CONTAINS levels to walk up per match.
+        include_similar: Whether to traverse SIMILAR_TO edges.
+
+    Returns:
+        GraphSearchResult with vector matches, assembled reference markdown,
+        and subgraph statistics.  Falls back to empty reference_document if KG
+        is disabled or graph traversal fails.
+    """
+    from pointy_rag import graph_query, llms_txt
+    from pointy_rag.config import get_settings
+
+    results = search(query, conn, limit=limit, threshold=threshold)
+
+    if not get_settings().kg_enabled or not results:
+        return GraphSearchResult(
+            vector_results=results,
+            reference_document="",
+            node_count=0,
+            edge_count=0,
+        )
+
+    node_ids = [r.chunk.id for r in results]
+    try:
+        subgraph = graph_query.build_context_subgraph(
+            node_ids, conn, hierarchy_levels_up, include_similar
+        )
+        reference_document = llms_txt.assemble_reference(subgraph, conn)
+    except Exception:
+        return GraphSearchResult(
+            vector_results=results,
+            reference_document="",
+            node_count=0,
+            edge_count=0,
+        )
+
+    return GraphSearchResult(
+        vector_results=results,
+        reference_document=reference_document,
+        node_count=len(subgraph["nodes"]),
+        edge_count=len(subgraph["edges"]),
+    )
 
 
 def get_parent_chain(

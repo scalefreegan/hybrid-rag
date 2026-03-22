@@ -185,9 +185,7 @@ def convert(
             markdown, out_path = asyncio.run(
                 convert_to_markdown(path, output_dir=output_dir, use_agent=not no_agent)
             )
-            console.print(
-                f"[bold green]\u2713[/] {path.name} -> {out_path}"
-            )
+            console.print(f"[bold green]\u2713[/] {path.name} -> {out_path}")
         except Exception as exc:
             console.print(f"[bold red]\u2717[/] {path.name}: {exc}")
 
@@ -211,8 +209,16 @@ def search(
         bool,
         typer.Option("--content", "-c", help="Show chunk content"),
     ] = False,
+    graph: Annotated[
+        bool,
+        typer.Option("--graph", "-g", help="Expand results via knowledge graph"),
+    ] = False,
 ):
     """Search the vector store with pointer-based retrieval."""
+    if graph:
+        graph_search_cmd(query, limit=limit, threshold=threshold)
+        return
+
     from rich.table import Table
 
     from pointy_rag.db import get_connection
@@ -269,6 +275,90 @@ def search(
     except Exception as exc:
         console.print(f"[bold red]Error:[/] {exc}")
         raise typer.Exit(code=1) from exc
+
+    console.print(table)
+
+
+@app.command("graph-search")
+def graph_search_cmd(
+    query: Annotated[str, typer.Argument(help="Search query")],
+    limit: Annotated[
+        int,
+        typer.Option("--limit", "-n", help="Number of results", min=1, max=100),
+    ] = 10,
+    threshold: Annotated[
+        float,
+        typer.Option("--threshold", "-t", help="Minimum similarity score"),
+    ] = 0.7,
+    levels_up: Annotated[
+        int,
+        typer.Option("--levels-up", help="Hierarchy levels to walk up per match"),
+    ] = 1,
+    no_similar: Annotated[
+        bool,
+        typer.Option("--no-similar", help="Skip SIMILAR_TO edge traversal"),
+    ] = False,
+):
+    """Search and expand results via the knowledge graph, rendering a reference doc."""
+    from pointy_rag.db import get_connection
+    from pointy_rag.search import graph_search
+
+    try:
+        with get_connection() as conn:
+            result = graph_search(
+                query,
+                conn,
+                limit=limit,
+                threshold=threshold,
+                hierarchy_levels_up=levels_up,
+                include_similar=not no_similar,
+            )
+    except Exception as exc:
+        console.print(f"[bold red]Error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(
+        f"[dim]{len(result.vector_results)} vector matches, "
+        f"{result.node_count} nodes in context graph, "
+        f"{result.edge_count} similarity edges[/]"
+    )
+
+    if result.reference_document:
+        console.print(result.reference_document)
+    else:
+        console.print(
+            "[yellow]No graph context available (KG disabled or no results).[/]"
+        )
+
+
+@app.command("graph-status")
+def graph_status():
+    """Show knowledge graph statistics."""
+    from rich.table import Table
+
+    from pointy_rag.db import get_connection
+    from pointy_rag.graph import get_graph_stats
+
+    try:
+        with get_connection() as conn:
+            stats = get_graph_stats(conn)
+    except Exception as exc:
+        console.print(f"[bold red]Error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    table = Table(title="Knowledge Graph Status")
+    table.add_column("Metric", style="bold")
+    table.add_column("Count", style="cyan", justify="right")
+
+    total_nodes = stats.get("node_count", 0)
+    total_edges = stats.get("edge_count", 0)
+    similar_to = stats.get("similar_to_count", 0)
+    contains = stats.get("contains_count", 0)
+
+    table.add_row("Total nodes", str(total_nodes))
+    table.add_row("Total edges", str(total_edges))
+    table.add_row("  CONTAINS edges", str(contains))
+    table.add_row("  SIMILAR_TO edges", str(similar_to))
 
     console.print(table)
 

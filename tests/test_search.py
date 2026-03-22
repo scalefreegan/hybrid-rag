@@ -13,6 +13,7 @@ from pointy_rag.search import (
     get_children,
     get_disclosure_content,
     get_parent_chain,
+    graph_search,
     search,
 )
 
@@ -193,6 +194,104 @@ class TestBatchChildrenCounts:
 
     def test_empty_ids(self, mock_conn):
         assert batch_children_counts([], mock_conn) == {}
+
+
+class TestGraphSearch:
+    @patch("pointy_rag.search.embed_query")
+    @patch("pointy_rag.llms_txt.assemble_reference")
+    @patch("pointy_rag.graph_query.build_context_subgraph")
+    @patch("pointy_rag.config.get_settings")
+    def test_returns_graph_result_when_kg_enabled(
+        self,
+        mock_settings,
+        mock_build,
+        mock_assemble,
+        mock_embed,
+        mock_conn,
+        sample_embedding,
+    ):
+        mock_embed.return_value = sample_embedding
+        mock_settings.return_value.kg_enabled = True
+
+        cursor = MagicMock()
+        cursor.execute.return_value = cursor
+        cursor.fetchall.return_value = [_make_joined_row()]
+        mock_conn.cursor.return_value = cursor
+
+        mock_build.return_value = {
+            "nodes": [{"node_id": "n1"}],
+            "edges": [{"type": "SIMILAR_TO"}],
+            "matches": ["chunk1"],
+            "hierarchy": {},
+        }
+        mock_assemble.return_value = "# Reference\n> Content"
+
+        result = graph_search("test query", mock_conn)
+
+        assert len(result.vector_results) == 1
+        assert result.reference_document == "# Reference\n> Content"
+        assert result.node_count == 1
+        assert result.edge_count == 1
+
+    @patch("pointy_rag.search.embed_query")
+    @patch("pointy_rag.config.get_settings")
+    def test_falls_back_when_kg_disabled(
+        self, mock_settings, mock_embed, mock_conn, sample_embedding
+    ):
+        mock_embed.return_value = sample_embedding
+        mock_settings.return_value.kg_enabled = False
+
+        cursor = MagicMock()
+        cursor.execute.return_value = cursor
+        cursor.fetchall.return_value = [_make_joined_row()]
+        mock_conn.cursor.return_value = cursor
+
+        result = graph_search("test query", mock_conn)
+
+        assert len(result.vector_results) == 1
+        assert result.reference_document == ""
+        assert result.node_count == 0
+        assert result.edge_count == 0
+
+    @patch("pointy_rag.search.embed_query")
+    @patch("pointy_rag.config.get_settings")
+    def test_falls_back_on_empty_results(
+        self, mock_settings, mock_embed, mock_conn, sample_embedding
+    ):
+        mock_embed.return_value = sample_embedding
+        mock_settings.return_value.kg_enabled = True
+
+        cursor = MagicMock()
+        cursor.execute.return_value = cursor
+        cursor.fetchall.return_value = []
+        mock_conn.cursor.return_value = cursor
+
+        result = graph_search("test query", mock_conn)
+
+        assert result.vector_results == []
+        assert result.reference_document == ""
+        assert result.node_count == 0
+
+    @patch("pointy_rag.search.embed_query")
+    @patch("pointy_rag.graph_query.build_context_subgraph")
+    @patch("pointy_rag.config.get_settings")
+    def test_falls_back_on_graph_exception(
+        self, mock_settings, mock_build, mock_embed, mock_conn, sample_embedding
+    ):
+        mock_embed.return_value = sample_embedding
+        mock_settings.return_value.kg_enabled = True
+        mock_build.side_effect = RuntimeError("AGE unavailable")
+
+        cursor = MagicMock()
+        cursor.execute.return_value = cursor
+        cursor.fetchall.return_value = [_make_joined_row()]
+        mock_conn.cursor.return_value = cursor
+
+        result = graph_search("test query", mock_conn)
+
+        assert len(result.vector_results) == 1
+        assert result.reference_document == ""
+        assert result.node_count == 0
 
 
 class TestGetParentChain:
