@@ -1,6 +1,6 @@
 """Apache AGE graph layer for pointy-rag knowledge graph."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import psycopg
 
@@ -46,9 +46,7 @@ def create_disclosure_node(ddoc: DisclosureDoc, conn: psycopg.Connection) -> Non
     conn.execute(_cypher_sql(cypher), (GRAPH_NAME,))  # noqa: S608
 
 
-def create_chunk_node(
-    chunk: Chunk, document_id: str, conn: psycopg.Connection
-) -> None:
+def create_chunk_node(chunk: Chunk, document_id: str, conn: psycopg.Connection) -> None:
     """Create a :ChunkNode vertex for a Chunk."""
     cypher = (
         f"MERGE (n:ChunkNode {{node_id: '{_esc(chunk.id)}'}}) "
@@ -121,7 +119,7 @@ def create_similar_to_edges(
     ).fetchall()
 
     created = 0
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     for row in rows:
         candidate_id, score = row["id"], row["score"]
         if score < threshold:

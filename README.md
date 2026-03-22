@@ -10,6 +10,8 @@ pointy-rag ingests PDF and EPUB documents, builds a 4-level progressive disclosu
 
 Instead of returning flat text chunks, search results include **pointers** into a disclosure hierarchy — letting you start with a high-level summary and drill down to detailed passages on demand.
 
+An optional **knowledge graph** layer (Apache AGE) adds cross-document semantic linking — when you search, graph traversal discovers related content from other documents and assembles an llms.txt-style reference document with hierarchical context.
+
 ## Architecture
 
 ```
@@ -32,30 +34,40 @@ converter ──► markdown
                                     │
                                     ▼
                               search ──► pointer-based results ──► drill navigation
+                                    │
+                                    ▼ (optional, if KG enabled)
+                              knowledge graph (Apache AGE)
+                                ├── CONTAINS edges (hierarchy)
+                                ├── SIMILAR_TO edges (cross-doc)
+                                └── graph-search ──► llms.txt reference doc
 ```
 
 ### Module map
 
 | Module | Role |
 |--------|------|
-| `cli.py` | Typer CLI with 5 commands |
+| `cli.py` | Typer CLI entry point |
 | `config.py` | Settings from `.env` / environment |
 | `converter.py` | PDF/EPUB to markdown (agent or fallback) |
 | `chunker.py` | Markdown-aware text chunking with overlap |
 | `embeddings.py` | Voyage AI embedding client (voyage-4-lite, 1024-dim) |
 | `db.py` | PostgreSQL/pgvector schema, CRUD, connection management |
-| `models.py` | Pydantic data models (Document, DisclosureDoc, Chunk, SearchResult) |
+| `models.py` | Pydantic data models (Document, DisclosureDoc, Chunk, SearchResult, GraphSearchResult) |
 | `disclosure.py` | 4-level disclosure hierarchy generator |
 | `claude_agent.py` | Headless Claude Code subprocess wrapper |
 | `pointer_mapper.py` | Maps text chunks to disclosure docs by heading/Jaccard similarity |
-| `ingest.py` | End-to-end ingestion pipeline |
-| `search.py` | Vector search with disclosure pointers and drill-down |
+| `ingest.py` | End-to-end ingestion pipeline (with optional KG population) |
+| `search.py` | Vector search with disclosure pointers, drill-down, and graph enrichment |
+| `graph.py` | Apache AGE knowledge graph — node/edge CRUD, similarity edges |
+| `graph_query.py` | Graph traversal — neighbor expansion, hierarchy walking, subgraph assembly |
+| `llms_txt.py` | Renders context subgraphs as llms.txt-style structured markdown references |
 
 ## Prerequisites
 
 - **Python 3.11+**
 - **[UV](https://docs.astral.sh/uv/)** package manager
-- **PostgreSQL 12+** with the [pgvector](https://github.com/pgvector/pgvector) extension
+- **PostgreSQL 13+** with the [pgvector](https://github.com/pgvector/pgvector) extension
+- **[Apache AGE](https://age.apache.org/)** PostgreSQL extension (optional — for knowledge graph features)
 - **Voyage AI API key** — get one at [dash.voyageai.com](https://dash.voyageai.com)
 - **Claude Code CLI** (optional) — enables agent-powered document conversion and disclosure generation. Without it, pointy-rag falls back to library-based extraction (no disclosure hierarchy).
 
@@ -90,7 +102,11 @@ uv run pointy-rag drill <disclosure-doc-id>
 |---------|-------------|-----------|
 | `init` | Create database tables and indexes | `--database-url` |
 | `ingest` | Ingest PDF/EPUB files into the vector store | `--output-dir`, `--no-agent` |
-| `search` | Semantic search with pointer-based results | `--limit`, `--threshold`, `--level`, `--content` |
+| `convert` | Convert PDF/EPUB to markdown without ingesting | `--output-dir`, `--no-agent` |
+| `search` | Semantic search with pointer-based results | `--limit`, `--threshold`, `--level`, `--content`, `--graph` |
+| `graph-search` | Search + knowledge graph enrichment → llms.txt reference | `--limit`, `--threshold`, `--levels-up`, `--no-similar` |
+| `graph-status` | Show knowledge graph node/edge statistics | |
+| `graph-backfill` | Migrate existing data into the knowledge graph | |
 | `drill` | Drill into a disclosure doc and view its children | `--content` |
 | `ls` | List all ingested documents with chunk/disclosure counts | |
 | `install-skill` | Install the Claude Code skill for interactive guidance | `--global`, `--agent` |
@@ -133,6 +149,45 @@ L0  Library Catalog          (1 per library — spans all documents)
 Generation is bottom-up: L3 is extracted structurally, then L2, L1, and L0 are progressively summarized by the Claude agent. The library catalog (L0) is regenerated after each ingestion to incorporate new documents.
 
 When using `--no-agent`, chunks are stored with a placeholder disclosure doc and no hierarchy is built.
+
+## Knowledge Graph (optional)
+
+pointy-rag can build a knowledge graph using [Apache AGE](https://age.apache.org/) (a PostgreSQL extension) to discover cross-document relationships. When enabled, the ingestion pipeline creates graph nodes for disclosure docs and chunks, then links semantically similar content across documents via `SIMILAR_TO` edges.
+
+### Setup
+
+Install the AGE extension on your PostgreSQL instance, then set:
+
+```bash
+export POINTY_KG_ENABLED=true           # Enable KG (default: true)
+export POINTY_KG_SIMILARITY_THRESHOLD=0.85  # Min similarity for edges
+export POINTY_KG_MAX_NEIGHBORS=20        # Max edges per node
+export POINTY_KG_HIERARCHY_LEVELS_UP=1   # Levels to walk up in search
+export POINTY_KG_SIMILAR_HOPS=1          # SIMILAR_TO traversal depth
+```
+
+### Usage
+
+```bash
+# Search with graph enrichment — returns an llms.txt-style reference doc
+uv run pointy-rag graph-search "attention mechanisms"
+
+# Or use the --graph flag on regular search
+uv run pointy-rag search "attention mechanisms" --graph
+
+# Check graph statistics
+uv run pointy-rag graph-status
+
+# Backfill existing documents into the graph (one-time)
+uv run pointy-rag graph-backfill
+```
+
+### Graph schema
+
+- **Nodes:** `:DisclosureNode` (L0-L3 disclosure docs) and `:ChunkNode` (embedded chunks)
+- **Edges:** `CONTAINS` (hierarchy: parent→child) and `SIMILAR_TO` (cross-document similarity, weighted by cosine score)
+
+The graph stores structure only — content and embeddings remain in PostgreSQL. This keeps the graph lean and avoids data duplication.
 
 ## Claude Code Skill
 
@@ -191,5 +246,8 @@ src/pointy_rag/
 ├── claude_agent.py      # Claude Code subprocess wrapper
 ├── pointer_mapper.py    # Chunk → disclosure doc mapping
 ├── ingest.py            # End-to-end ingestion pipeline
-└── search.py            # Vector search + drill-down navigation
+├── search.py            # Vector search + drill-down + graph enrichment
+├── graph.py             # Apache AGE knowledge graph CRUD
+├── graph_query.py       # Graph traversal + subgraph assembly
+└── llms_txt.py          # llms.txt-style reference doc renderer
 ```

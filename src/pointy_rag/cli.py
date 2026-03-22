@@ -469,7 +469,13 @@ def ls():
 @app.command("graph-backfill")
 def graph_backfill():
     """Migrate existing PostgreSQL data into the knowledge graph (one-time backfill)."""
-    from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeElapsedColumn
+    from rich.progress import (
+        BarColumn,
+        Progress,
+        TaskProgressColumn,
+        TextColumn,
+        TimeElapsedColumn,
+    )
 
     from pointy_rag.config import get_settings
     from pointy_rag.db import (
@@ -489,7 +495,10 @@ def graph_backfill():
 
     settings = get_settings()
     if not settings.kg_enabled:
-        console.print("[yellow]Knowledge graph is disabled (POINTY_KG_ENABLED=false). Aborting.[/]")
+        console.print(
+            "[yellow]Knowledge graph is disabled"
+            " (POINTY_KG_ENABLED=false). Aborting.[/]"
+        )
         raise typer.Exit(code=1)
 
     try:
@@ -516,7 +525,8 @@ def graph_backfill():
 
                 for doc in docs:
                     doc_id = doc["id"]
-                    progress.update(doc_task, description=f"Processing: {doc['title'][:40]}")
+                    title = doc["title"][:40]
+                    progress.update(doc_task, description=f"Processing: {title}")
 
                     ddocs = get_disclosure_docs_by_document(doc_id, conn)
                     for ddoc in ddocs:
@@ -525,7 +535,9 @@ def graph_backfill():
                         if is_new:
                             total_nodes += 1
                         if ddoc.parent_id:
-                            merge_contains_edge(ddoc.parent_id, ddoc.id, ddoc.ordering, conn)
+                            merge_contains_edge(
+                                ddoc.parent_id, ddoc.id, ddoc.ordering, conn
+                            )
 
                     chunks = get_chunks_by_document(doc_id, conn)
                     for chunk in chunks:
@@ -535,12 +547,14 @@ def graph_backfill():
                             total_nodes += 1
                         merge_contains_edge(chunk.disclosure_doc_id, chunk.id, 0, conn)
                         if is_new and chunk.embedding is not None:
-                            total_similarity_edges += create_similar_to_edges(chunk, conn)
+                            total_similarity_edges += create_similar_to_edges(
+                                chunk, conn
+                            )
 
                     conn.commit()
                     progress.advance(doc_task)
 
-        console.print(f"\n[bold green]\u2713[/] Backfill complete.")
+        console.print("\n[bold green]\u2713[/] Backfill complete.")
         console.print(f"  Documents processed: {len(docs)}")
         console.print(f"  Nodes created:       {total_nodes}")
         console.print(f"  Similarity edges:    {total_similarity_edges}")

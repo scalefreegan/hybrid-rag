@@ -63,7 +63,10 @@ def test_graph_backfill_aborts_when_kg_disabled():
     from pointy_rag.config import Settings
 
     # Imports inside graph_backfill are from their source modules
-    with patch("pointy_rag.config.get_settings", return_value=Settings(kg_enabled=False)):
+    with patch(
+        "pointy_rag.config.get_settings",
+        return_value=Settings(kg_enabled=False),
+    ):
         result = runner.invoke(app, ["graph-backfill"])
     assert result.exit_code != 0
     assert "disabled" in result.output.lower()
@@ -95,7 +98,12 @@ def test_graph_backfill_processes_documents():
 
     mock_conn = MagicMock()
 
-    doc = {"id": "doc-1", "title": "Test Book", "format": "pdf", "created_at": datetime.now(UTC)}
+    doc = {
+        "id": "doc-1",
+        "title": "Test Book",
+        "format": "pdf",
+        "created_at": datetime.now(UTC),
+    }
     ddoc = DisclosureDoc(
         id="ddoc-1",
         document_id="doc-1",
@@ -104,7 +112,12 @@ def test_graph_backfill_processes_documents():
         content="Content.",
         parent_id=None,
     )
-    chunk = Chunk(id="chunk-1", disclosure_doc_id="ddoc-1", content="text", embedding=[0.1] * 4)
+    chunk = Chunk(
+        id="chunk-1",
+        disclosure_doc_id="ddoc-1",
+        content="text",
+        embedding=[0.1] * 4,
+    )
 
     with (
         patch("pointy_rag.config.get_settings", return_value=Settings(kg_enabled=True)),

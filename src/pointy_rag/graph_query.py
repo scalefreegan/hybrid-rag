@@ -212,12 +212,14 @@ def build_context_subgraph(
                 if not sim_id:
                     continue
                 all_nodes[sim_id] = sim_node
-                all_edges.append({
-                    "type": "SIMILAR_TO",
-                    "source": nid,
-                    "target": sim_id,
-                    "score": sim_node.get("edge_score"),
-                })
+                all_edges.append(
+                    {
+                        "type": "SIMILAR_TO",
+                        "source": nid,
+                        "target": sim_id,
+                        "score": sim_node.get("edge_score"),
+                    }
+                )
                 # Walk up 1 hierarchy level for each similar node
                 sim_ancestors = walk_hierarchy_up(sim_id, conn, 1)
                 for ancestor in sim_ancestors:

@@ -27,8 +27,7 @@ def test_ensure_graph_issues_extension_and_load(mock_conn):
         ensure_graph(mock_conn)
 
     sql_fragments = [
-        c.args[0] if c.args else ""
-        for c in mock_conn.execute.call_args_list
+        c.args[0] if c.args else "" for c in mock_conn.execute.call_args_list
     ]
     assert any("CREATE EXTENSION IF NOT EXISTS age" in s for s in sql_fragments)
     assert any("LOAD 'age'" in s for s in sql_fragments)

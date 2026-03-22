@@ -244,24 +244,24 @@ class TestGraphIntegration:
             ordering=0,
         )
 
-        with patch(
-            "pointy_rag.disclosure.generate_disclosure_hierarchy",
-            new_callable=AsyncMock,
-            return_value=[ddoc],
+        with (
+            patch(
+                "pointy_rag.disclosure.generate_disclosure_hierarchy",
+                new_callable=AsyncMock,
+                return_value=[ddoc],
+            ),
+            patch("pointy_rag.pointer_mapper.map_chunks_to_disclosure") as mock_map,
         ):
-            with patch(
-                "pointy_rag.pointer_mapper.map_chunks_to_disclosure"
-            ) as mock_map:
-                from pointy_rag.models import Chunk
+            from pointy_rag.models import Chunk
 
-                chunk = Chunk(
-                    disclosure_doc_id=ddoc.id,
-                    content="Content here.",
-                    embedding=[0.1] * 1024,
-                    metadata={},
-                )
-                mock_map.return_value = [chunk]
-                await ingest_document(tmp_pdf, mock_conn, use_agent=True)
+            chunk = Chunk(
+                disclosure_doc_id=ddoc.id,
+                content="Content here.",
+                embedding=[0.1] * 1024,
+                metadata={},
+            )
+            mock_map.return_value = [chunk]
+            await ingest_document(tmp_pdf, mock_conn, use_agent=True)
 
         mock_create_disclosure_node.assert_called_once()
         mock_create_chunk_node.assert_called_once()
@@ -296,13 +296,13 @@ class TestGraphIntegration:
         mock_embed.return_value = [[0.1] * 1024]
         mock_get_existing.return_value = None
 
-        with patch("pointy_rag.graph.create_chunk_node") as mock_chunk_node:
-            with patch(
-                "pointy_rag.graph.create_similar_to_edges"
-            ) as mock_similar_to:
-                await ingest_document(tmp_pdf, mock_conn, use_agent=False)
-                mock_chunk_node.assert_not_called()
-                mock_similar_to.assert_not_called()
+        with (
+            patch("pointy_rag.graph.create_chunk_node") as mock_chunk_node,
+            patch("pointy_rag.graph.create_similar_to_edges") as mock_similar_to,
+        ):
+            await ingest_document(tmp_pdf, mock_conn, use_agent=False)
+            mock_chunk_node.assert_not_called()
+            mock_similar_to.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("pointy_rag.ingest.get_settings")

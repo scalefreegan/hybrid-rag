@@ -99,7 +99,10 @@ def test_resolve_explicit_wins():
         WorkspaceConfig(directory=Path("/ws"), database_url="postgresql://ws/db")
     )
     try:
-        assert resolve_database_url("postgresql://explicit/db") == "postgresql://explicit/db"
+        assert (
+            resolve_database_url("postgresql://explicit/db")
+            == "postgresql://explicit/db"
+        )
     finally:
         set_active_workspace(None)
 

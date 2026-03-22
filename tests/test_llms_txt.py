@@ -2,18 +2,17 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from pointy_rag.llms_txt import _blockquote, _fetch_node_content, assemble_reference
 from pointy_rag.models import DisclosureDoc, Document
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _ddoc(node_id: str, title: str, content: str, level: int = 1, doc_id: str = "doc-1") -> DisclosureDoc:
+def _ddoc(
+    node_id: str, title: str, content: str, level: int = 1, doc_id: str = "doc-1"
+) -> DisclosureDoc:
     return DisclosureDoc(
         id=node_id,
         document_id=doc_id,
@@ -30,11 +29,17 @@ def _doc(doc_id: str, title: str) -> Document:
         id=doc_id,
         title=title,
         format=DocumentFormat.pdf,
-        source_path=f"/tmp/{doc_id}.pdf",
+        source_path=f"/tmp/{doc_id}.pdf",  # noqa: S108
     )
 
 
-def _node(node_id: str, title: str, level: int, doc_id: str = "doc-1", node_type: str = "disclosure") -> dict:
+def _node(
+    node_id: str,
+    title: str,
+    level: int,
+    doc_id: str = "doc-1",
+    node_type: str = "disclosure",
+) -> dict:
     return {
         "node_id": node_id,
         "node_type": node_type,
@@ -129,7 +134,10 @@ def test_heading_depth_matches_node_level(mock_conn):
         "match-1": _ddoc("match-1", "Match Node", "match content", level=1),
     }
 
-    with patch("pointy_rag.llms_txt.db.get_disclosure_doc", side_effect=lambda nid, _: ddocs.get(nid)):
+    with patch(
+        "pointy_rag.llms_txt.db.get_disclosure_doc",
+        side_effect=lambda nid, _: ddocs.get(nid),
+    ):
         result = assemble_reference(sg, mock_conn)
 
     assert "# Root Section [ref:anc-1]" in result
@@ -165,7 +173,10 @@ def test_ref_pointers_present_for_all_nodes(mock_conn):
         "m1": _ddoc("m1", "Match", "match content", level=1),
     }
 
-    with patch("pointy_rag.llms_txt.db.get_disclosure_doc", side_effect=lambda nid, _: ddocs.get(nid)):
+    with patch(
+        "pointy_rag.llms_txt.db.get_disclosure_doc",
+        side_effect=lambda nid, _: ddocs.get(nid),
+    ):
         result = assemble_reference(sg, mock_conn)
 
     assert "[ref:anc-1]" in result
@@ -174,7 +185,9 @@ def test_ref_pointers_present_for_all_nodes(mock_conn):
 
 def test_ref_pointer_includes_node_id_exactly(mock_conn):
     node = _node("unique-id-42", "Node", level=1)
-    sg = _subgraph(nodes=[node], matches=["unique-id-42"], hierarchy={"unique-id-42": []})
+    sg = _subgraph(
+        nodes=[node], matches=["unique-id-42"], hierarchy={"unique-id-42": []}
+    )
     ddoc = _ddoc("unique-id-42", "Node", "content", level=1)
 
     with patch("pointy_rag.llms_txt.db.get_disclosure_doc", return_value=ddoc):
@@ -212,7 +225,10 @@ def test_ancestor_nodes_do_not_have_match_prefix(mock_conn):
         "m1": _ddoc("m1", "Child", "match content", level=1),
     }
 
-    with patch("pointy_rag.llms_txt.db.get_disclosure_doc", side_effect=lambda nid, _: ddocs.get(nid)):
+    with patch(
+        "pointy_rag.llms_txt.db.get_disclosure_doc",
+        side_effect=lambda nid, _: ddocs.get(nid),
+    ):
         result = assemble_reference(sg, mock_conn)
 
     assert "Match: Parent" not in result
@@ -293,7 +309,10 @@ def test_ancestor_content_is_blockquoted(mock_conn):
         "m1": _ddoc("m1", "Section", "match text", level=1),
     }
 
-    with patch("pointy_rag.llms_txt.db.get_disclosure_doc", side_effect=lambda nid, _: ddocs.get(nid)):
+    with patch(
+        "pointy_rag.llms_txt.db.get_disclosure_doc",
+        side_effect=lambda nid, _: ddocs.get(nid),
+    ):
         result = assemble_reference(sg, mock_conn)
 
     assert "> ancestor text" in result
@@ -332,7 +351,10 @@ def test_shared_ancestor_rendered_once(mock_conn):
         "m2": _ddoc("m2", "Match Two", "content 2", level=1),
     }
 
-    with patch("pointy_rag.llms_txt.db.get_disclosure_doc", side_effect=lambda nid, _: ddocs.get(nid)):
+    with patch(
+        "pointy_rag.llms_txt.db.get_disclosure_doc",
+        side_effect=lambda nid, _: ddocs.get(nid),
+    ):
         result = assemble_reference(sg, mock_conn)
 
     assert result.count("[ref:anc-shared]") == 1
@@ -354,7 +376,10 @@ def test_shared_ancestor_across_two_match_paths(mock_conn):
         "child-b": _ddoc("child-b", "Child B", "b content", level=1),
     }
 
-    with patch("pointy_rag.llms_txt.db.get_disclosure_doc", side_effect=lambda nid, _: ddocs.get(nid)):
+    with patch(
+        "pointy_rag.llms_txt.db.get_disclosure_doc",
+        side_effect=lambda nid, _: ddocs.get(nid),
+    ):
         result = assemble_reference(sg, mock_conn)
 
     assert result.count("Shared Root") == 1

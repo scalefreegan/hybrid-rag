@@ -64,7 +64,13 @@ def _resolve_node_info(node_id: str, conn: psycopg.Connection) -> dict:
             "title": f"Chunk ({row['parent_title']})",
             "document_id": row["document_id"],
         }
-    return {"node_id": node_id, "node_type": "chunk", "level": None, "title": node_id, "document_id": ""}
+    return {
+        "node_id": node_id,
+        "node_type": "chunk",
+        "level": None,
+        "title": node_id,
+        "document_id": "",
+    }
 
 
 def assemble_reference(subgraph: dict, conn: psycopg.Connection) -> str:
