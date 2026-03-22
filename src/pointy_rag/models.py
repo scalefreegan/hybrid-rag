@@ -52,3 +52,10 @@ class SearchResult(BaseModel):
     score: float
     document: Document | None = None
     disclosure_doc: DisclosureDoc | None = None
+
+
+class GraphSearchResult(BaseModel):
+    vector_results: list[SearchResult]  # Original pgvector matches
+    reference_document: str  # Assembled llms.txt markdown
+    node_count: int  # Nodes in context subgraph
+    edge_count: int  # Edges traversed
