@@ -161,6 +161,38 @@ def ingest(
 
 
 @app.command()
+def convert(
+    paths: Annotated[
+        list[Path],
+        typer.Argument(help="Files to convert (PDF or EPUB)"),
+    ],
+    output_dir: Annotated[
+        Path,
+        typer.Option("--output-dir", "-o", help="Directory for converted markdown"),
+    ] = Path("."),
+    no_agent: Annotated[
+        bool,
+        typer.Option("--no-agent", help="Skip Claude agent, use library extraction"),
+    ] = False,
+):
+    """Convert PDF or EPUB files to markdown without ingesting."""
+    import asyncio
+
+    from pointy_rag.converter import convert_to_markdown
+
+    for path in paths:
+        try:
+            markdown, out_path = asyncio.run(
+                convert_to_markdown(path, output_dir=output_dir, use_agent=not no_agent)
+            )
+            console.print(
+                f"[bold green]\u2713[/] {path.name} -> {out_path}"
+            )
+        except Exception as exc:
+            console.print(f"[bold red]\u2717[/] {path.name}: {exc}")
+
+
+@app.command()
 def search(
     query: Annotated[str, typer.Argument(help="Search query")],
     limit: Annotated[
