@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 
 import psycopg
 
 from pointy_rag.graph import GRAPH_NAME, _cypher_sql, _esc
+
+logger = logging.getLogger(__name__)
 
 
 def _cypher_sql_multi(cypher: str, *col_names: str) -> str:
@@ -34,6 +37,7 @@ def _parse_agtype(val: object) -> dict | list | None:
     try:
         return json.loads(s)
     except (json.JSONDecodeError, ValueError):
+        logger.debug("Failed to parse agtype value: %r", val)
         return None
 
 

@@ -107,6 +107,7 @@ def create_tables(database_url: str | None = None) -> None:
             from pointy_rag.graph import ensure_graph
 
             ensure_graph(conn)
+            conn.commit()
 
 
 def insert_document(doc: Document, conn: psycopg.Connection) -> None:

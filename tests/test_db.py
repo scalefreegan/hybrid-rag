@@ -149,8 +149,8 @@ def test_create_tables():
     # Verify HNSW index (not IVFFlat)
     assert "hnsw" in ddl_sql
     assert "ivfflat" not in ddl_sql
-    # Verify commit called (extension commit + DDL commit)
-    assert mock_conn.commit.call_count == 2
+    # extension commit + DDL commit + ensure_graph commit (when kg_enabled)
+    assert mock_conn.commit.call_count >= 2
 
 
 def test_split_ddl():

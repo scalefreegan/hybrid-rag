@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+
 import psycopg
 import psycopg.rows
 
 from pointy_rag import db
 from pointy_rag.models import DisclosureLevel
+
+logger = logging.getLogger(__name__)
 
 
 def _blockquote(text: str) -> str:
@@ -27,13 +31,19 @@ def _fetch_node_content(node_id: str, node_type: str, conn: psycopg.Connection) 
     """
     if node_type == "disclosure":
         ddoc = db.get_disclosure_doc(node_id, conn)
-        return ddoc.content if ddoc else ""
+        if ddoc is None:
+            logger.warning("Disclosure doc not found for node_id=%s", node_id)
+            return ""
+        return ddoc.content
     row = (
         conn.cursor(row_factory=psycopg.rows.dict_row)
         .execute("SELECT content FROM chunks WHERE id = %s", (node_id,))
         .fetchone()
     )
-    return row["content"] if row else ""
+    if row is None:
+        logger.warning("Chunk not found for node_id=%s", node_id)
+        return ""
+    return row["content"]
 
 
 def _resolve_node_info(node_id: str, conn: psycopg.Connection) -> dict:
@@ -65,6 +75,7 @@ def _resolve_node_info(node_id: str, conn: psycopg.Connection) -> dict:
             "title": f"Chunk ({row['parent_title']})",
             "document_id": row["document_id"],
         }
+    logger.warning("Could not resolve node info for node_id=%s", node_id)
     return {
         "node_id": node_id,
         "node_type": "chunk",

@@ -290,7 +290,7 @@ class TestGraphSearch:
         result = graph_search("test query", mock_conn)
 
         assert len(result.vector_results) == 1
-        assert result.reference_document == ""
+        assert result.reference_document == "[Graph expansion failed]"
         assert result.node_count == 0
 
 

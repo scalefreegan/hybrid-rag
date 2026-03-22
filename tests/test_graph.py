@@ -37,11 +37,12 @@ def test_ensure_graph_issues_extension_and_load(mock_conn):
 
 
 def test_ensure_graph_idempotent_on_duplicate(mock_conn):
-    """ensure_graph should swallow the exception when graph already exists."""
+    """ensure_graph should swallow DuplicateSchema when graph already exists."""
+    import psycopg.errors
 
     def side_effect(sql, *args, **kwargs):
         if "create_graph" in sql:
-            raise Exception("graph already exists")
+            raise psycopg.errors.DuplicateSchema("graph already exists")
         return MagicMock()
 
     mock_conn.execute.side_effect = side_effect

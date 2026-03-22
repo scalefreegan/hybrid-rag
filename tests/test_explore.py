@@ -675,7 +675,7 @@ def test_explore_exception_fallback(mock_conn):
         result = explore_fn("test", mock_conn)
 
     assert isinstance(result, ExploreResult)
-    assert result.overview == ""
+    assert result.overview == "[Graph expansion failed]"
     assert result.node_count == 0
 
 

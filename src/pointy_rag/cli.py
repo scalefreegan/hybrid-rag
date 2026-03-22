@@ -594,41 +594,54 @@ def graph_backfill():
             ) as progress:
                 doc_task = progress.add_task("Backfilling...", total=len(docs))
 
+                failed_docs: list[str] = []
                 for doc in docs:
                     doc_id = doc["id"]
                     title = doc["title"][:40]
                     progress.update(doc_task, description=f"Processing: {title}")
 
-                    ddocs = get_disclosure_docs_by_document(doc_id, conn)
-                    for ddoc in ddocs:
-                        is_new = not node_exists(ddoc.id, conn)
-                        create_disclosure_node(ddoc, conn)
-                        if is_new:
-                            total_nodes += 1
-                        if ddoc.parent_id:
+                    try:
+                        ddocs = get_disclosure_docs_by_document(doc_id, conn)
+                        for ddoc in ddocs:
+                            is_new = not node_exists(ddoc.id, conn)
+                            create_disclosure_node(ddoc, conn)
+                            if is_new:
+                                total_nodes += 1
+                            if ddoc.parent_id:
+                                merge_contains_edge(
+                                    ddoc.parent_id, ddoc.id, ddoc.ordering, conn
+                                )
+
+                        chunks = get_chunks_by_document(doc_id, conn)
+                        for chunk in chunks:
+                            is_new = not node_exists(chunk.id, conn)
+                            create_chunk_node(chunk, doc_id, conn)
+                            if is_new:
+                                total_nodes += 1
                             merge_contains_edge(
-                                ddoc.parent_id, ddoc.id, ddoc.ordering, conn
+                                chunk.disclosure_doc_id, chunk.id, 0, conn
                             )
+                            if is_new and chunk.embedding is not None:
+                                total_similarity_edges += create_similar_to_edges(
+                                    chunk, conn
+                                )
 
-                    chunks = get_chunks_by_document(doc_id, conn)
-                    for chunk in chunks:
-                        is_new = not node_exists(chunk.id, conn)
-                        create_chunk_node(chunk, doc_id, conn)
-                        if is_new:
-                            total_nodes += 1
-                        merge_contains_edge(chunk.disclosure_doc_id, chunk.id, 0, conn)
-                        if is_new and chunk.embedding is not None:
-                            total_similarity_edges += create_similar_to_edges(
-                                chunk, conn
-                            )
+                        conn.commit()
+                    except Exception as exc:
+                        console.print(
+                            f"[yellow]Warning:[/] Failed to backfill {title}: {exc}"
+                        )
+                        conn.rollback()
+                        failed_docs.append(doc_id)
 
-                    conn.commit()
                     progress.advance(doc_task)
 
         console.print("\n[bold green]\u2713[/] Backfill complete.")
-        console.print(f"  Documents processed: {len(docs)}")
+        console.print(f"  Documents processed: {len(docs) - len(failed_docs)}")
         console.print(f"  Nodes created:       {total_nodes}")
         console.print(f"  Similarity edges:    {total_similarity_edges}")
+        if failed_docs:
+            console.print(f"  [yellow]Failed:              {len(failed_docs)}[/]")
 
     except typer.Exit:
         raise

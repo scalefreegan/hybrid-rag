@@ -149,25 +149,29 @@ async def ingest_document(
 
     # --- Stage 8: Populate knowledge graph ---
     if settings.kg_enabled:
-        from pointy_rag.graph import (
-            create_chunk_node,
-            create_contains_edge,
-            create_disclosure_node,
-            create_similar_to_edges,
-        )
+        try:
+            from pointy_rag.graph import (
+                create_chunk_node,
+                create_contains_edge,
+                create_disclosure_node,
+                create_similar_to_edges,
+            )
 
-        for ddoc in disclosure_docs:
-            create_disclosure_node(ddoc, conn)
-            if ddoc.parent_id:
-                create_contains_edge(ddoc.parent_id, ddoc.id, ddoc.ordering, conn)
-        for chunk in mapped_chunks:
-            create_chunk_node(chunk, doc.id, conn)
-            create_contains_edge(chunk.disclosure_doc_id, chunk.id, 0, conn)
-        edge_count = 0
-        for chunk in mapped_chunks:
-            edge_count += create_similar_to_edges(chunk, conn)
-        logger.info("Created %d similarity edges", edge_count)
-        conn.commit()
+            for ddoc in disclosure_docs:
+                create_disclosure_node(ddoc, conn)
+                if ddoc.parent_id:
+                    create_contains_edge(ddoc.parent_id, ddoc.id, ddoc.ordering, conn)
+            for chunk in mapped_chunks:
+                create_chunk_node(chunk, doc.id, conn)
+                create_contains_edge(chunk.disclosure_doc_id, chunk.id, 0, conn)
+            edge_count = 0
+            for chunk in mapped_chunks:
+                edge_count += create_similar_to_edges(chunk, conn)
+            logger.info("Created %d similarity edges", edge_count)
+            conn.commit()
+        except Exception as exc:
+            logger.warning("KG population failed (document stored): %s", exc)
+            conn.rollback()
 
     # --- Regenerate library catalog ---
     if use_agent and disclosure_docs:

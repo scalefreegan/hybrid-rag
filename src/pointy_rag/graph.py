@@ -1,10 +1,13 @@
 """Apache AGE graph layer for pointy-rag knowledge graph."""
 
+import logging
 from datetime import UTC, datetime
 
 import psycopg
 
 from pointy_rag.models import Chunk, DisclosureDoc
+
+logger = logging.getLogger(__name__)
 
 GRAPH_NAME = "pointy_rag_kg"
 
@@ -49,9 +52,11 @@ def ensure_graph(conn: psycopg.Connection) -> None:
             "SELECT ag_catalog.create_graph(%s)",
             (GRAPH_NAME,),
         )
-    except Exception:
-        # Graph already exists — silently ignore
+    except psycopg.errors.DuplicateSchema:
+        # Graph already exists — rollback and restore AGE session state
         conn.rollback()
+        conn.execute("LOAD 'age'")
+        conn.execute("SET search_path = ag_catalog, '$user', public")
 
 
 def create_disclosure_node(ddoc: DisclosureDoc, conn: psycopg.Connection) -> None:

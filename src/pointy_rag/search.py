@@ -1,5 +1,7 @@
 """Pointer-based vector search for pointy-rag."""
 
+import logging
+
 import psycopg
 import psycopg.rows
 
@@ -13,6 +15,8 @@ from pointy_rag.models import (
     GraphSearchResult,
     SearchResult,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def search(
@@ -204,9 +208,10 @@ def graph_search(
         )
         reference_document = llms_txt.assemble_reference(subgraph, conn)
     except Exception:
+        logger.warning("Graph expansion failed for graph_search", exc_info=True)
         return GraphSearchResult(
             vector_results=results,
-            reference_document="",
+            reference_document="[Graph expansion failed]",
             node_count=0,
             edge_count=0,
         )
@@ -260,9 +265,10 @@ def explore(
             subgraph, conn, query
         )
     except Exception:
+        logger.warning("Graph expansion failed for explore", exc_info=True)
         return ExploreResult(
             vector_results=results,
-            overview="",
+            overview="[Graph expansion failed]",
             llms_txt="",
             contents={},
             node_count=0,
