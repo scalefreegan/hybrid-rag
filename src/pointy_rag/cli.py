@@ -559,10 +559,10 @@ def graph_backfill():
     )
     from pointy_rag.graph import (
         create_chunk_node,
+        create_contains_edge,
         create_disclosure_node,
         create_similar_to_edges,
         ensure_graph,
-        merge_contains_edge,
         node_exists,
     )
 
@@ -610,7 +610,7 @@ def graph_backfill():
                             if is_new:
                                 total_nodes += 1
                             if ddoc.parent_id:
-                                merge_contains_edge(
+                                create_contains_edge(
                                     ddoc.parent_id, ddoc.id, ddoc.ordering, conn
                                 )
 
@@ -620,7 +620,7 @@ def graph_backfill():
                             create_chunk_node(chunk, doc_id, conn)
                             if is_new:
                                 total_nodes += 1
-                            merge_contains_edge(
+                            create_contains_edge(
                                 chunk.disclosure_doc_id, chunk.id, 0, conn
                             )
                             if is_new and chunk.embedding is not None:

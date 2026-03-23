@@ -301,7 +301,7 @@ def test_build_context_subgraph_deduplicates_nodes_across_matches():
 
         result = build_context_subgraph(["node-a", "node-b"], MagicMock())
 
-    node_ids = [n["node_id"] for n in result["nodes"]]
+    node_ids = [n.node_id for n in result.nodes]
     assert node_ids.count("shared") == 1
 
 
@@ -323,14 +323,14 @@ def test_build_context_subgraph_includes_similar_neighbors_when_enabled():
 
         result = build_context_subgraph(["node-a"], MagicMock(), include_similar=True)
 
-    node_ids = [n["node_id"] for n in result["nodes"]]
+    node_ids = [n.node_id for n in result.nodes]
     assert "sim-1" in node_ids
-    assert len(result["edges"]) == 1
-    edge = result["edges"][0]
-    assert edge["type"] == "SIMILAR_TO"
-    assert edge["source"] == "node-a"
-    assert edge["target"] == "sim-1"
-    assert edge["score"] == 0.9
+    assert len(result.edges) == 1
+    edge = result.edges[0]
+    assert edge.type == "SIMILAR_TO"
+    assert edge.source == "node-a"
+    assert edge.target == "sim-1"
+    assert edge.score == 0.9
 
 
 def test_build_context_subgraph_excludes_similar_neighbors_when_disabled():
@@ -343,7 +343,7 @@ def test_build_context_subgraph_excludes_similar_neighbors_when_disabled():
         result = build_context_subgraph(["node-a"], MagicMock(), include_similar=False)
 
     mock_neighbors.assert_not_called()
-    assert result["edges"] == []
+    assert result.edges == []
 
 
 def test_build_context_subgraph_preserves_match_node_ids():
@@ -356,7 +356,7 @@ def test_build_context_subgraph_preserves_match_node_ids():
 
         result = build_context_subgraph(["n1", "n2", "n3"], MagicMock())
 
-    assert result["matches"] == ["n1", "n2", "n3"]
+    assert result.matches == ["n1", "n2", "n3"]
 
 
 def test_build_context_subgraph_builds_hierarchy_from_ancestors():
@@ -384,10 +384,10 @@ def test_build_context_subgraph_builds_hierarchy_from_ancestors():
 
         result = build_context_subgraph(["child"], MagicMock(), hierarchy_levels_up=2)
 
-    assert "root" in result["hierarchy"]
-    assert "parent" in result["hierarchy"]["root"]
-    assert "parent" in result["hierarchy"]
-    assert "child" in result["hierarchy"]["parent"]
+    assert "root" in result.hierarchy
+    assert "parent" in result.hierarchy["root"]
+    assert "parent" in result.hierarchy
+    assert "child" in result.hierarchy["parent"]
 
 
 def test_build_context_subgraph_similar_node_ancestors_in_hierarchy():
@@ -418,5 +418,5 @@ def test_build_context_subgraph_similar_node_ancestors_in_hierarchy():
 
         result = build_context_subgraph(["node-a"], MagicMock(), include_similar=True)
 
-    assert "sim-parent" in result["hierarchy"]
-    assert "sim-1" in result["hierarchy"]["sim-parent"]
+    assert "sim-parent" in result.hierarchy
+    assert "sim-1" in result.hierarchy["sim-parent"]

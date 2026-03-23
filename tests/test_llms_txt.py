@@ -1,9 +1,17 @@
 """Unit tests for pointy_rag.llms_txt — pure logic, no live database."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from pointy_rag.llms_txt import _blockquote, _fetch_node_content, assemble_reference
-from pointy_rag.models import DisclosureDoc, Document
+from pointy_rag.models import (
+    Chunk,
+    ContextSubgraph,
+    DisclosureDoc,
+    Document,
+    DocumentFormat,
+    GraphEdge,
+    GraphNode,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -23,8 +31,6 @@ def _ddoc(
 
 
 def _doc(doc_id: str, title: str) -> Document:
-    from pointy_rag.models import DocumentFormat
-
     return Document(
         id=doc_id,
         title=title,
@@ -33,29 +39,29 @@ def _doc(doc_id: str, title: str) -> Document:
     )
 
 
-def _node(
+def _gnode(
     node_id: str,
     title: str,
     level: int,
     doc_id: str = "doc-1",
     node_type: str = "disclosure",
-) -> dict:
-    return {
-        "node_id": node_id,
-        "node_type": node_type,
-        "level": level,
-        "title": title,
-        "document_id": doc_id,
-    }
+) -> GraphNode:
+    return GraphNode(
+        node_id=node_id,
+        node_type=node_type,
+        level=level,
+        title=title,
+        document_id=doc_id,
+    )
 
 
 def _subgraph(nodes, matches, hierarchy, edges=None):
-    return {
-        "nodes": nodes,
-        "matches": matches,
-        "hierarchy": hierarchy,
-        "edges": edges or [],
-    }
+    return ContextSubgraph(
+        nodes=nodes,
+        matches=matches,
+        hierarchy=hierarchy,
+        edges=[GraphEdge(**e) for e in edges] if edges else [],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -96,22 +102,15 @@ def test_fetch_node_content_disclosure_missing(mock_conn):
 
 
 def test_fetch_node_content_chunk(mock_conn):
-    mock_cursor = MagicMock()
-    mock_cursor.execute.return_value = mock_cursor
-    mock_cursor.fetchone.return_value = {"content": "chunk content"}
-    mock_conn.cursor.return_value = mock_cursor
-
-    result = _fetch_node_content("c1", "chunk", mock_conn)
+    chunk = Chunk(id="c1", disclosure_doc_id="dd1", content="chunk content")
+    with patch("pointy_rag.llms_txt.db.get_chunk", return_value=chunk):
+        result = _fetch_node_content("c1", "chunk", mock_conn)
     assert result == "chunk content"
 
 
 def test_fetch_node_content_chunk_missing(mock_conn):
-    mock_cursor = MagicMock()
-    mock_cursor.execute.return_value = mock_cursor
-    mock_cursor.fetchone.return_value = None
-    mock_conn.cursor.return_value = mock_cursor
-
-    result = _fetch_node_content("c1", "chunk", mock_conn)
+    with patch("pointy_rag.llms_txt.db.get_chunk", return_value=None):
+        result = _fetch_node_content("c1", "chunk", mock_conn)
     assert result == ""
 
 
@@ -122,8 +121,8 @@ def test_fetch_node_content_chunk_missing(mock_conn):
 
 def test_heading_depth_matches_node_level(mock_conn):
     """Node at level N should produce N+1 hashes."""
-    ancestor = _node("anc-1", "Root Section", level=0)
-    match_node = _node("match-1", "Match Node", level=1)
+    ancestor = _gnode("anc-1", "Root Section", level=0)
+    match_node = _gnode("match-1", "Match Node", level=1)
     sg = _subgraph(
         nodes=[ancestor, match_node],
         matches=["match-1"],
@@ -145,7 +144,7 @@ def test_heading_depth_matches_node_level(mock_conn):
 
 
 def test_heading_l0_is_single_hash(mock_conn):
-    match_node = _node("m1", "Top Doc", level=0)
+    match_node = _gnode("m1", "Top Doc", level=0)
     sg = _subgraph(nodes=[match_node], matches=["m1"], hierarchy={"m1": []})
     ddoc = _ddoc("m1", "Top Doc", "content", level=0)
 
@@ -161,8 +160,8 @@ def test_heading_l0_is_single_hash(mock_conn):
 
 
 def test_ref_pointers_present_for_all_nodes(mock_conn):
-    ancestor = _node("anc-1", "Ancestor", level=0)
-    match_node = _node("m1", "Match", level=1)
+    ancestor = _gnode("anc-1", "Ancestor", level=0)
+    match_node = _gnode("m1", "Match", level=1)
     sg = _subgraph(
         nodes=[ancestor, match_node],
         matches=["m1"],
@@ -184,7 +183,7 @@ def test_ref_pointers_present_for_all_nodes(mock_conn):
 
 
 def test_ref_pointer_includes_node_id_exactly(mock_conn):
-    node = _node("unique-id-42", "Node", level=1)
+    node = _gnode("unique-id-42", "Node", level=1)
     sg = _subgraph(
         nodes=[node], matches=["unique-id-42"], hierarchy={"unique-id-42": []}
     )
@@ -202,7 +201,7 @@ def test_ref_pointer_includes_node_id_exactly(mock_conn):
 
 
 def test_match_nodes_have_match_prefix(mock_conn):
-    match_node = _node("m1", "Result Section", level=2)
+    match_node = _gnode("m1", "Result Section", level=2)
     sg = _subgraph(nodes=[match_node], matches=["m1"], hierarchy={"m1": []})
     ddoc = _ddoc("m1", "Result Section", "content", level=2)
 
@@ -213,8 +212,8 @@ def test_match_nodes_have_match_prefix(mock_conn):
 
 
 def test_ancestor_nodes_do_not_have_match_prefix(mock_conn):
-    ancestor = _node("anc-1", "Parent", level=0)
-    match_node = _node("m1", "Child", level=1)
+    ancestor = _gnode("anc-1", "Parent", level=0)
+    match_node = _gnode("m1", "Child", level=1)
     sg = _subgraph(
         nodes=[ancestor, match_node],
         matches=["m1"],
@@ -241,7 +240,7 @@ def test_ancestor_nodes_do_not_have_match_prefix(mock_conn):
 
 
 def test_similar_nodes_have_related_prefix(mock_conn):
-    sim_node = _node("sim-1", "Similar Section", level=1, doc_id="doc-2")
+    sim_node = _gnode("sim-1", "Similar Section", level=1, doc_id="doc-2")
     sg = _subgraph(
         nodes=[sim_node],
         matches=["m1"],
@@ -267,7 +266,7 @@ def test_similar_nodes_have_related_prefix(mock_conn):
 
 
 def test_similar_nodes_have_from_attribution(mock_conn):
-    sim_node = _node("sim-1", "Similar Section", level=1, doc_id="doc-2")
+    sim_node = _gnode("sim-1", "Similar Section", level=1, doc_id="doc-2")
     sg = _subgraph(
         nodes=[sim_node],
         matches=["m1"],
@@ -297,8 +296,8 @@ def test_similar_nodes_have_from_attribution(mock_conn):
 
 
 def test_ancestor_content_is_blockquoted(mock_conn):
-    ancestor = _node("anc-1", "Chapter 1", level=0)
-    match_node = _node("m1", "Section", level=1)
+    ancestor = _gnode("anc-1", "Chapter 1", level=0)
+    match_node = _gnode("m1", "Section", level=1)
     sg = _subgraph(
         nodes=[ancestor, match_node],
         matches=["m1"],
@@ -319,7 +318,7 @@ def test_ancestor_content_is_blockquoted(mock_conn):
 
 
 def test_match_content_is_not_blockquoted(mock_conn):
-    match_node = _node("m1", "Match", level=1)
+    match_node = _gnode("m1", "Match", level=1)
     sg = _subgraph(nodes=[match_node], matches=["m1"], hierarchy={"m1": []})
     ddoc = _ddoc("m1", "Match", "plain match content", level=1)
 
@@ -337,9 +336,9 @@ def test_match_content_is_not_blockquoted(mock_conn):
 
 def test_shared_ancestor_rendered_once(mock_conn):
     """Two matches sharing an ancestor — ancestor appears exactly once."""
-    ancestor = _node("anc-shared", "Shared Chapter", level=0)
-    m1 = _node("m1", "Match One", level=1)
-    m2 = _node("m2", "Match Two", level=1)
+    ancestor = _gnode("anc-shared", "Shared Chapter", level=0)
+    m1 = _gnode("m1", "Match One", level=1)
+    m2 = _gnode("m2", "Match Two", level=1)
     sg = _subgraph(
         nodes=[ancestor, m1, m2],
         matches=["m1", "m2"],
@@ -362,9 +361,9 @@ def test_shared_ancestor_rendered_once(mock_conn):
 
 def test_shared_ancestor_across_two_match_paths(mock_conn):
     """Ancestor shared via two separate match chains appears only once."""
-    ancestor = _node("shared", "Shared Root", level=0)
-    child_a = _node("child-a", "Child A", level=1)
-    child_b = _node("child-b", "Child B", level=1)
+    ancestor = _gnode("shared", "Shared Root", level=0)
+    child_a = _gnode("child-a", "Child A", level=1)
+    child_b = _gnode("child-b", "Child B", level=1)
     sg = _subgraph(
         nodes=[ancestor, child_a, child_b],
         matches=["child-a", "child-b"],
@@ -399,7 +398,7 @@ def test_empty_subgraph_returns_empty_string(mock_conn):
 
 def test_match_with_no_ancestors_rendered_directly(mock_conn):
     """A match node with no hierarchy entry is rendered as a top-level section."""
-    match_node = _node("m1", "Orphan Match", level=2)
+    match_node = _gnode("m1", "Orphan Match", level=2)
     sg = _subgraph(nodes=[match_node], matches=["m1"], hierarchy={})
     ddoc = _ddoc("m1", "Orphan Match", "orphan content", level=2)
 

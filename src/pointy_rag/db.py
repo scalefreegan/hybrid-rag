@@ -316,6 +316,28 @@ def delete_document_data(doc_id: str, conn: psycopg.Connection) -> None:
     conn.execute("DELETE FROM documents WHERE id = %s", (doc_id,))
 
 
+def get_chunk(chunk_id: str, conn: psycopg.Connection) -> Chunk | None:
+    """Fetch a single chunk by ID."""
+    row = (
+        conn.cursor(row_factory=psycopg.rows.dict_row)
+        .execute(
+            "SELECT id, disclosure_doc_id, content, embedding, metadata"
+            " FROM chunks WHERE id = %s",
+            (chunk_id,),
+        )
+        .fetchone()
+    )
+    if row is None:
+        return None
+    return Chunk(
+        id=row["id"],
+        disclosure_doc_id=row["disclosure_doc_id"],
+        content=row["content"],
+        embedding=row["embedding"],
+        metadata=row["metadata"],
+    )
+
+
 def get_chunks_by_document(doc_id: str, conn: psycopg.Connection) -> list[Chunk]:
     """Fetch all chunks for a document via JOIN through disclosure_docs."""
     rows = (

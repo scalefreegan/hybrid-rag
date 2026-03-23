@@ -19,10 +19,13 @@ from pointy_rag.llms_txt import (
 )
 from pointy_rag.models import (
     Chunk,
+    ContextSubgraph,
     DisclosureDoc,
     Document,
     DocumentFormat,
     ExploreResult,
+    GraphEdge,
+    GraphNode,
     SearchResult,
 )
 
@@ -54,14 +57,14 @@ def _node(
     level: int,
     doc_id: str = "doc-1",
     node_type: str = "disclosure",
-) -> dict:
-    return {
-        "node_id": node_id,
-        "node_type": node_type,
-        "level": level,
-        "title": title,
-        "document_id": doc_id,
-    }
+) -> GraphNode:
+    return GraphNode(
+        node_id=node_id,
+        node_type=node_type,
+        level=level,
+        title=title,
+        document_id=doc_id,
+    )
 
 
 def _search_result(chunk_id: str = "c1") -> SearchResult:
@@ -72,12 +75,12 @@ def _search_result(chunk_id: str = "c1") -> SearchResult:
 
 
 def _subgraph(nodes, matches, hierarchy, edges=None):
-    return {
-        "nodes": nodes,
-        "matches": matches,
-        "hierarchy": hierarchy,
-        "edges": edges or [],
-    }
+    return ContextSubgraph(
+        nodes=nodes,
+        matches=matches,
+        hierarchy=hierarchy,
+        edges=[GraphEdge(**e) for e in edges] if edges else [],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +199,11 @@ def test_ancestor_chain_no_parents():
 def test_ancestor_chain_breaks_on_cycle():
     """Cycle in hierarchy should not cause infinite loop."""
     child_to_parent = {"a": "b", "b": "c", "c": "a"}  # cycle: a->b->c->a
-    nodes_index = {"a": {}, "b": {}, "c": {}}
+    nodes_index = {
+        "a": _node("a", "A", 0),
+        "b": _node("b", "B", 0),
+        "c": _node("c", "C", 0),
+    }
     result = _ancestor_chain("a", child_to_parent, nodes_index)
     # Should terminate, not hang. Exact result depends on implementation.
     assert isinstance(result, list)
@@ -879,14 +886,14 @@ def test_contents_escapes_quotes_in_title(mock_conn):
 # ---------------------------------------------------------------------------
 
 
-def test_prepare_subgraph_skips_none_node_id(mock_conn):
-    """Nodes with node_id=None should be silently filtered out."""
+def test_prepare_subgraph_skips_empty_node_id(mock_conn):
+    """Nodes with empty node_id should be silently filtered out."""
     from pointy_rag.llms_txt import _prepare_subgraph
 
     sg = _subgraph(
         nodes=[
             _node("m1", "Valid", 1),
-            {"node_id": None, "node_type": "disclosure", "level": 0, "title": "Bad"},
+            GraphNode(node_id="", node_type="disclosure", level=0, title="Bad"),
         ],
         matches=["m1"],
         hierarchy={"m1": []},
@@ -895,7 +902,7 @@ def test_prepare_subgraph_skips_none_node_id(mock_conn):
         prepared = _prepare_subgraph(sg, mock_conn)
 
     assert "m1" in prepared.nodes_index
-    assert None not in prepared.nodes_index
+    assert "" not in prepared.nodes_index
 
 
 # ---------------------------------------------------------------------------

@@ -168,7 +168,7 @@ def test_graph_backfill_continues_on_failure():
         patch("pointy_rag.graph.node_exists", return_value=False),
         patch("pointy_rag.graph.create_disclosure_node"),
         patch("pointy_rag.graph.create_chunk_node"),
-        patch("pointy_rag.graph.merge_contains_edge"),
+        patch("pointy_rag.graph.create_contains_edge"),
         patch("pointy_rag.graph.create_similar_to_edges", return_value=1),
     ):
         result = runner.invoke(app, ["graph-backfill"])
@@ -221,7 +221,7 @@ def test_graph_backfill_processes_documents():
         patch("pointy_rag.graph.node_exists", return_value=False),
         patch("pointy_rag.graph.create_disclosure_node") as mock_cdn,
         patch("pointy_rag.graph.create_chunk_node") as mock_ccn,
-        patch("pointy_rag.graph.merge_contains_edge") as mock_mce,
+        patch("pointy_rag.graph.create_contains_edge") as mock_cce,
         patch("pointy_rag.graph.create_similar_to_edges", return_value=3) as mock_cse,
     ):
         result = runner.invoke(app, ["graph-backfill"])
@@ -229,8 +229,8 @@ def test_graph_backfill_processes_documents():
     assert result.exit_code == 0
     mock_cdn.assert_called_once_with(ddoc, mock_conn)
     mock_ccn.assert_called_once_with(chunk, "doc-1", mock_conn)
-    # merge_contains_edge called for disclosure->chunk (no parent_id on ddoc)
-    mock_mce.assert_called_once_with("ddoc-1", "chunk-1", 0, mock_conn)
+    # create_contains_edge called for disclosure->chunk (no parent_id on ddoc)
+    mock_cce.assert_called_once_with("ddoc-1", "chunk-1", 0, mock_conn)
     mock_cse.assert_called_once_with(chunk, mock_conn)
     assert "1" in result.output  # documents processed
     assert "3" in result.output  # similarity edges

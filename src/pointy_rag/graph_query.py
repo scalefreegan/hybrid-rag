@@ -5,22 +5,13 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, TypedDict
 
 import psycopg
 
-from pointy_rag.graph import GRAPH_NAME, _cypher_sql, _esc
+from pointy_rag.graph import GRAPH_NAME, cypher_sql, escape_cypher
+from pointy_rag.models import ContextSubgraph, GraphEdge, GraphNode
 
 logger = logging.getLogger(__name__)
-
-
-class SubgraphDict(TypedDict):
-    """Typed structure returned by build_context_subgraph."""
-
-    nodes: list[dict[str, Any]]
-    edges: list[dict[str, Any]]
-    matches: list[str]
-    hierarchy: dict[str, list[str]]
 
 
 def _cypher_sql_multi(cypher: str, *col_names: str) -> str:
@@ -102,7 +93,7 @@ def get_neighbors(
     rel = f"-[r:{edge_type}*1..{max_hops}]-" if edge_type else f"-[r*1..{max_hops}]-"
 
     cypher = (
-        f"MATCH (start {{node_id: '{_esc(node_id)}'}}) "
+        f"MATCH (start {{node_id: '{escape_cypher(node_id)}'}}) "
         f"{rel}(neighbor) "
         f"RETURN neighbor, r"
     )
@@ -146,10 +137,10 @@ def walk_hierarchy_up(
     """
     cypher = (
         f"MATCH path = (ancestor)-[:CONTAINS*1..{levels_up}]->"
-        f"(start {{node_id: '{_esc(node_id)}'}}) "
+        f"(start {{node_id: '{escape_cypher(node_id)}'}}) "
         f"RETURN nodes(path)"
     )
-    rows = conn.execute(_cypher_sql(cypher), (GRAPH_NAME,)).fetchall()
+    rows = conn.execute(cypher_sql(cypher), (GRAPH_NAME,)).fetchall()
 
     # Use the longest matching path to get the fullest ancestor chain
     best_path: list = []
@@ -168,7 +159,7 @@ def build_context_subgraph(
     hierarchy_levels_up: int = 1,
     include_similar: bool = True,
     similar_hops: int = 1,
-) -> SubgraphDict:
+) -> ContextSubgraph:
     """Build a context subgraph for a set of matched nodes.
 
     For each matched node:
@@ -188,14 +179,10 @@ def build_context_subgraph(
         similar_hops: Max hops for SIMILAR_TO traversal.
 
     Returns:
-        dict with:
-          nodes    — list of unique node dicts
-          edges    — list of edge dicts (type, source, target, score)
-          matches  — the original match_node_ids
-          hierarchy — parent_id -> [child_ids] mapping
+        ContextSubgraph with typed nodes, edges, matches, and hierarchy.
     """
     all_nodes: dict[str, dict] = {}
-    all_edges: list[dict] = []
+    all_edges: list[GraphEdge] = []
     hierarchy: dict[str, list[str]] = {}
 
     for nid in match_node_ids:
@@ -227,12 +214,12 @@ def build_context_subgraph(
                     continue
                 all_nodes[sim_id] = sim_node
                 all_edges.append(
-                    {
-                        "type": "SIMILAR_TO",
-                        "source": nid,
-                        "target": sim_id,
-                        "score": sim_node.get("edge_score"),
-                    }
+                    GraphEdge(
+                        type="SIMILAR_TO",
+                        source=nid,
+                        target=sim_id,
+                        score=sim_node.get("edge_score"),
+                    )
                 )
                 # Walk up 1 hierarchy level for each similar node
                 sim_ancestors = walk_hierarchy_up(sim_id, conn, 1)
@@ -245,8 +232,8 @@ def build_context_subgraph(
                     if sim_id not in hierarchy[aid]:
                         hierarchy[aid].append(sim_id)
 
-    return SubgraphDict(
-        nodes=list(all_nodes.values()),
+    return ContextSubgraph(
+        nodes=[GraphNode(**p) for p in all_nodes.values() if p.get("node_id")],
         edges=all_edges,
         matches=list(match_node_ids),
         hierarchy=hierarchy,

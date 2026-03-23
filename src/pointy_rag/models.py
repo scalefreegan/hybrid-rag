@@ -54,6 +54,28 @@ class SearchResult(BaseModel):
     disclosure_doc: DisclosureDoc | None = None
 
 
+class GraphNode(BaseModel):
+    node_id: str
+    node_type: str  # "disclosure" | "chunk"
+    level: int | None = None
+    title: str | None = None
+    document_id: str | None = None
+
+
+class GraphEdge(BaseModel):
+    type: str  # "SIMILAR_TO" | "CONTAINS"
+    source: str
+    target: str
+    score: float | None = None
+
+
+class ContextSubgraph(BaseModel):
+    nodes: list[GraphNode]
+    edges: list[GraphEdge]
+    matches: list[str]
+    hierarchy: dict[str, list[str]] = Field(default_factory=dict)
+
+
 class GraphSearchResult(BaseModel):
     vector_results: list[SearchResult]  # Original pgvector matches
     reference_document: str | None = None  # Assembled llms.txt markdown

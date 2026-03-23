@@ -6,7 +6,6 @@ import pytest
 
 from pointy_rag.graph import (
     GRAPH_NAME,
-    _escape_cypher,
     _parse_agtype_int,
     create_chunk_node,
     create_contains_edge,
@@ -14,8 +13,8 @@ from pointy_rag.graph import (
     create_similar_to_edges,
     delete_document_graph_data,
     ensure_graph,
+    escape_cypher,
     get_graph_stats,
-    merge_contains_edge,
     node_exists,
 )
 from pointy_rag.models import Chunk, DisclosureDoc, DisclosureLevel
@@ -132,6 +131,7 @@ def test_create_contains_edge(mock_conn):
     mock_conn.execute.assert_called_once()
     sql, params = mock_conn.execute.call_args[0]
     assert "ag_catalog.cypher" in sql
+    assert "MERGE" in sql  # uses MERGE for idempotency
     assert "CONTAINS" in sql
     assert "parent-1" in sql
     assert "child-1" in sql
@@ -175,32 +175,6 @@ def test_get_graph_stats_empty_graph(mock_conn):
 
 
 # ---------------------------------------------------------------------------
-# merge_contains_edge
-# ---------------------------------------------------------------------------
-
-
-def test_merge_contains_edge(mock_conn):
-    merge_contains_edge("parent-1", "child-1", 2, mock_conn)
-    mock_conn.execute.assert_called_once()
-    sql, params = mock_conn.execute.call_args[0]
-    assert "ag_catalog.cypher" in sql
-    assert "MERGE" in sql
-    assert "CONTAINS" in sql
-    assert "parent-1" in sql
-    assert "child-1" in sql
-    assert "2" in sql
-    assert GRAPH_NAME in params
-
-
-def test_merge_contains_edge_uses_merge_not_create(mock_conn):
-    merge_contains_edge("p", "c", 0, mock_conn)
-    sql, _ = mock_conn.execute.call_args[0]
-    # MERGE pattern, not a bare CREATE
-    assert "MERGE" in sql
-    assert "CREATE (p" not in sql  # no bare CREATE edge statement
-
-
-# ---------------------------------------------------------------------------
 # node_exists
 # ---------------------------------------------------------------------------
 
@@ -230,25 +204,25 @@ def test_node_exists_agtype_string(mock_conn):
 
 
 # ---------------------------------------------------------------------------
-# _escape_cypher
+# escape_cypher
 # ---------------------------------------------------------------------------
 
 
 def test_escape_cypher_single_quote():
-    assert _escape_cypher("it's") == "it''s"
+    assert escape_cypher("it's") == "it''s"
 
 
 def test_escape_cypher_backslash():
-    assert _escape_cypher("a\\b") == "a\\\\b"
+    assert escape_cypher("a\\b") == "a\\\\b"
 
 
 def test_escape_cypher_backslash_and_quote():
     """Backslash must be doubled before quote is doubled."""
-    assert _escape_cypher("\\'") == "\\\\''", "backslash-then-quote must escape both"
+    assert escape_cypher("\\'") == "\\\\''", "backslash-then-quote must escape both"
 
 
 def test_escape_cypher_plain():
-    assert _escape_cypher("hello") == "hello"
+    assert escape_cypher("hello") == "hello"
 
 
 # ---------------------------------------------------------------------------

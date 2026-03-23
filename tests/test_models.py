@@ -5,10 +5,13 @@ from pydantic import ValidationError
 
 from pointy_rag.models import (
     Chunk,
+    ContextSubgraph,
     DisclosureDoc,
     DisclosureLevel,
     Document,
     DocumentFormat,
+    GraphEdge,
+    GraphNode,
     SearchResult,
 )
 
@@ -120,3 +123,53 @@ def test_search_result():
     assert result.score == 0.95
     assert result.document is None
     assert result.disclosure_doc is None
+
+
+# ---------------------------------------------------------------------------
+# GraphNode / GraphEdge / ContextSubgraph
+# ---------------------------------------------------------------------------
+
+
+def test_graph_node_minimal():
+    node = GraphNode(node_id="n1", node_type="disclosure")
+    assert node.node_id == "n1"
+    assert node.level is None
+    assert node.title is None
+    assert node.document_id is None
+
+
+def test_graph_node_full():
+    node = GraphNode(
+        node_id="n1", node_type="chunk", level=2, title="Section", document_id="doc-1"
+    )
+    assert node.level == 2
+    assert node.title == "Section"
+
+
+def test_graph_edge_minimal():
+    edge = GraphEdge(type="SIMILAR_TO", source="a", target="b")
+    assert edge.score is None
+
+
+def test_graph_edge_with_score():
+    edge = GraphEdge(type="SIMILAR_TO", source="a", target="b", score=0.9)
+    assert edge.score == 0.9
+
+
+def test_context_subgraph_defaults():
+    sg = ContextSubgraph(nodes=[], edges=[], matches=[])
+    assert sg.hierarchy == {}
+
+
+def test_context_subgraph_full():
+    nodes = [GraphNode(node_id="n1", node_type="disclosure")]
+    edges = [GraphEdge(type="SIMILAR_TO", source="n1", target="n2", score=0.8)]
+    sg = ContextSubgraph(
+        nodes=nodes,
+        edges=edges,
+        matches=["n1"],
+        hierarchy={"n1": ["n2"]},
+    )
+    assert len(sg.nodes) == 1
+    assert sg.nodes[0].node_id == "n1"
+    assert sg.edges[0].score == 0.8

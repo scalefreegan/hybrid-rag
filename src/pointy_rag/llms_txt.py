@@ -9,8 +9,7 @@ import psycopg
 import psycopg.rows
 
 from pointy_rag import db
-from pointy_rag.graph_query import SubgraphDict
-from pointy_rag.models import DisclosureLevel
+from pointy_rag.models import ContextSubgraph, DisclosureLevel, GraphNode
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +17,7 @@ logger = logging.getLogger(__name__)
 class PreparedSubgraph(NamedTuple):
     """Pre-computed subgraph data shared across explore assemblers."""
 
-    nodes_index: dict[str, dict]
+    nodes_index: dict[str, GraphNode]
     match_ids: set[str]
     similar_ids: set[str]
     hierarchy: dict[str, list[str]]
@@ -64,28 +63,24 @@ def _fetch_node_content(node_id: str, node_type: str, conn: psycopg.Connection) 
             logger.warning("Disclosure doc not found for node_id=%s", node_id)
             return ""
         return ddoc.content
-    row = (
-        conn.cursor(row_factory=psycopg.rows.dict_row)
-        .execute("SELECT content FROM chunks WHERE id = %s", (node_id,))
-        .fetchone()
-    )
-    if row is None:
+    chunk = db.get_chunk(node_id, conn)
+    if chunk is None:
         logger.warning("Chunk not found for node_id=%s", node_id)
         return ""
-    return row["content"]
+    return chunk.content
 
 
-def _resolve_node_info(node_id: str, conn: psycopg.Connection) -> dict:
+def _resolve_node_info(node_id: str, conn: psycopg.Connection) -> GraphNode:
     """Resolve node metadata from PG for a match node absent from the subgraph index."""
     ddoc = db.get_disclosure_doc(node_id, conn)
     if ddoc is not None:
-        return {
-            "node_id": node_id,
-            "node_type": "disclosure",
-            "level": int(ddoc.level),
-            "title": ddoc.title,
-            "document_id": ddoc.document_id,
-        }
+        return GraphNode(
+            node_id=node_id,
+            node_type="disclosure",
+            level=int(ddoc.level),
+            title=ddoc.title,
+            document_id=ddoc.document_id,
+        )
     row = (
         conn.cursor(row_factory=psycopg.rows.dict_row)
         .execute(
@@ -97,24 +92,24 @@ def _resolve_node_info(node_id: str, conn: psycopg.Connection) -> dict:
         .fetchone()
     )
     if row:
-        return {
-            "node_id": node_id,
-            "node_type": "chunk",
-            "level": None,
-            "title": f"Chunk ({row['parent_title']})",
-            "document_id": row["document_id"],
-        }
+        return GraphNode(
+            node_id=node_id,
+            node_type="chunk",
+            level=None,
+            title=f"Chunk ({row['parent_title']})",
+            document_id=row["document_id"],
+        )
     logger.warning("Could not resolve node info for node_id=%s", node_id)
-    return {
-        "node_id": node_id,
-        "node_type": "chunk",
-        "level": None,
-        "title": node_id,
-        "document_id": "",
-    }
+    return GraphNode(
+        node_id=node_id,
+        node_type="chunk",
+        level=None,
+        title=node_id,
+        document_id="",
+    )
 
 
-def assemble_reference(subgraph: SubgraphDict, conn: psycopg.Connection) -> str:
+def assemble_reference(subgraph: ContextSubgraph, conn: psycopg.Connection) -> str:
     """Render a context subgraph as a structured llms.txt markdown reference document.
 
     Takes the subgraph produced by graph_query.build_context_subgraph and emits
@@ -125,8 +120,7 @@ def assemble_reference(subgraph: SubgraphDict, conn: psycopg.Connection) -> str:
       - [ref:<node_id>] pointers on every heading for downstream drill-down
 
     Args:
-        subgraph: Dict from graph_query.build_context_subgraph with keys:
-            nodes (list), edges (list), matches (list), hierarchy (dict).
+        subgraph: ContextSubgraph from graph_query.build_context_subgraph.
         conn: Active psycopg connection for fetching node content.
 
     Returns:
@@ -147,17 +141,16 @@ def assemble_reference(subgraph: SubgraphDict, conn: psycopg.Connection) -> str:
         if not node:
             return ""
 
-        raw_level = node.get("level")
-        hashes = _heading_hashes(raw_level)
-        title = node.get("title") or node_id
-        node_type = node.get("node_type") or "disclosure"
+        hashes = _heading_hashes(node.level)
+        title = node.title or node_id
+        node_type = node.node_type or "disclosure"
         content = _fetch_node_content(node_id, node_type, conn)
 
         if node_id in match_ids:
             header = f"{hashes} Match: {title} [ref:{node_id}]"
             body = content
         elif node_id in similar_ids:
-            doc_title = _resolve_doc_title(node.get("document_id") or "", conn)
+            doc_title = _resolve_doc_title(node.document_id or "", conn)
             header = f"{hashes} Related: {title} [ref:{node_id}]"
             body = f"> From: {doc_title}\n{content}"
         else:
@@ -217,24 +210,23 @@ def _node_role(node_id: str, match_ids: set[str], similar_ids: set[str]) -> str:
 
 
 def _prepare_subgraph(
-    subgraph: SubgraphDict, conn: psycopg.Connection
+    subgraph: ContextSubgraph, conn: psycopg.Connection
 ) -> PreparedSubgraph:
     """Shared subgraph preparation for explore assemblers.
 
     Returns:
         (nodes_index, match_ids, similar_ids, hierarchy, root_ids)
     """
-    nodes_index: dict[str, dict] = {
-        n["node_id"]: n for n in subgraph.get("nodes", []) if n.get("node_id")
+    nodes_index: dict[str, GraphNode] = {
+        n.node_id: n for n in subgraph.nodes if n.node_id
     }
-    match_ids: set[str] = set(subgraph.get("matches", []))
-    hierarchy: dict[str, list[str]] = subgraph.get("hierarchy", {})
-    edges: list[dict] = subgraph.get("edges", [])
+    match_ids: set[str] = set(subgraph.matches)
+    hierarchy: dict[str, list[str]] = subgraph.hierarchy
 
     similar_ids: set[str] = {
-        e["target"]
-        for e in edges
-        if e.get("type") == "SIMILAR_TO" and e.get("source") in match_ids
+        e.target
+        for e in subgraph.edges
+        if e.type == "SIMILAR_TO" and e.source in match_ids
     }
 
     for nid in match_ids:
@@ -259,7 +251,7 @@ def _build_child_to_parent(hierarchy: dict[str, list[str]]) -> dict[str, str]:
 def _ancestor_chain(
     node_id: str,
     child_to_parent: dict[str, str],
-    nodes_index: dict[str, dict],
+    nodes_index: dict[str, GraphNode],
 ) -> list[str]:
     """Walk up from node_id, returning ancestor IDs from root to immediate parent."""
     chain: list[str] = []
@@ -283,7 +275,7 @@ def _ancestor_chain(
 
 
 def assemble_explore_overview(
-    subgraph: SubgraphDict,
+    subgraph: ContextSubgraph,
     conn: psycopg.Connection,
     query: str,
     prepared: PreparedSubgraph | None = None,
@@ -300,9 +292,7 @@ def assemble_explore_overview(
             subgraph, conn
         )
 
-    doc_ids = {
-        n.get("document_id") for n in nodes_index.values() if n.get("document_id")
-    }
+    doc_ids = {n.document_id for n in nodes_index.values() if n.document_id}
     n_matches = len(match_ids)
     n_nodes = len(nodes_index)
     n_docs = len(doc_ids)
@@ -324,17 +314,15 @@ def assemble_explore_overview(
         if not node:
             return
 
-        title = node.get("title") or node_id
-        content = _fetch_node_content(
-            node_id, node.get("node_type") or "disclosure", conn
-        )
+        title = node.title or node_id
+        content = _fetch_node_content(node_id, node.node_type or "disclosure", conn)
         snip = _snippet(content)
         role = _node_role(node_id, match_ids, similar_ids)
         badge = f" [{role}]" if role != "context" else ""
 
         if indent == 0:
             # Root node as ## heading
-            doc_id = node.get("document_id") or ""
+            doc_id = node.document_id or ""
             doc_title = _resolve_doc_title(doc_id, conn) if doc_id else title
             lines.append(f"## {doc_title}")
         else:
@@ -363,7 +351,7 @@ def assemble_explore_overview(
 
 
 def assemble_explore_llms_txt(
-    subgraph: SubgraphDict,
+    subgraph: ContextSubgraph,
     conn: psycopg.Connection,
     query: str,
     prepared: PreparedSubgraph | None = None,
@@ -381,11 +369,9 @@ def assemble_explore_llms_txt(
         )
 
     n_matches = len(match_ids)
-    doc_ids = {
-        n.get("document_id") for n in nodes_index.values() if n.get("document_id")
-    }
+    doc_ids = {n.document_id for n in nodes_index.values() if n.document_id}
     n_docs = len(doc_ids)
-    n_edges = len(subgraph.get("edges", []))
+    n_edges = len(subgraph.edges)
 
     sections: list[str] = [
         f'# Explore: "{query}"',
@@ -405,19 +391,18 @@ def assemble_explore_llms_txt(
         if not node:
             return ""
 
-        raw_level = node.get("level")
-        hashes = _heading_hashes(raw_level)
-        title = node.get("title") or node_id
-        node_type = node.get("node_type") or "disclosure"
+        hashes = _heading_hashes(node.level)
+        title = node.title or node_id
+        node_type = node.node_type or "disclosure"
         content = _fetch_node_content(node_id, node_type, conn)
-        label = _level_label(raw_level)
+        label = _level_label(node.level)
         role = _node_role(node_id, match_ids, similar_ids)
 
         # Build heading
         if role == "match":
             header = f"{hashes} Match: {title} [ref:{node_id}]"
         elif role == "related":
-            doc_title = _resolve_doc_title(node.get("document_id") or "", conn)
+            doc_title = _resolve_doc_title(node.document_id or "", conn)
             header = f"{hashes} Related: {title} [ref:{node_id}]"
             label = f"{label} — From: {doc_title}"
         else:
@@ -450,7 +435,7 @@ def assemble_explore_llms_txt(
 
 
 def assemble_explore_contents(
-    subgraph: SubgraphDict,
+    subgraph: ContextSubgraph,
     conn: psycopg.Connection,
     prepared: PreparedSubgraph | None = None,
 ) -> dict[str, str]:
@@ -473,13 +458,12 @@ def assemble_explore_contents(
     contents: dict[str, str] = {}
 
     for node_id, node in nodes_index.items():
-        title = node.get("title") or node_id
-        raw_level = node.get("level")
-        node_type = node.get("node_type") or "disclosure"
+        title = node.title or node_id
+        node_type = node.node_type or "disclosure"
         role = _node_role(node_id, match_ids, similar_ids)
 
         # Resolve document title
-        doc_id = node.get("document_id") or ""
+        doc_id = node.document_id or ""
         doc_title = _resolve_doc_title(doc_id, conn)
 
         # YAML frontmatter — escape backslashes then quotes for valid YAML
@@ -489,7 +473,7 @@ def assemble_explore_contents(
             "---",
             f"node_id: {node_id}",
             f'title: "{safe_title}"',
-            f"level: {_level_label(raw_level)}",
+            f"level: {_level_label(node.level)}",
             f'document: "{safe_doc_title}"',
             f"role: {role}",
             "---",
@@ -502,19 +486,18 @@ def assemble_explore_contents(
         ancestors = _ancestor_chain(node_id, child_to_parent, nodes_index)
         for anc_id in ancestors:
             anc = nodes_index[anc_id]
-            anc_title = anc.get("title") or anc_id
-            anc_level = anc.get("level")
-            anc_type = anc.get("node_type") or "disclosure"
-            anc_hashes = _heading_hashes(anc_level)
+            anc_title = anc.title or anc_id
+            anc_type = anc.node_type or "disclosure"
+            anc_hashes = _heading_hashes(anc.level)
             anc_content = _fetch_node_content(anc_id, anc_type, conn)
-            anc_label = _level_label(anc_level)
+            anc_label = _level_label(anc.level)
             body_parts.append(
                 f"{anc_hashes} {anc_title}\n*{anc_label}*\n\n{anc_content}"
             )
 
         # Own content
         own_content = _fetch_node_content(node_id, node_type, conn)
-        own_hashes = _heading_hashes(raw_level)
+        own_hashes = _heading_hashes(node.level)
 
         if role == "related":
             body_parts.append(
@@ -530,7 +513,7 @@ def assemble_explore_contents(
 
 
 def assemble_explore(
-    subgraph: SubgraphDict, conn: psycopg.Connection, query: str
+    subgraph: ContextSubgraph, conn: psycopg.Connection, query: str
 ) -> tuple[str, str, dict[str, str]]:
     """Orchestrate the three-layer explore package assembly.
 
