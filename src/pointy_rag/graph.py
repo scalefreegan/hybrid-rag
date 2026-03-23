@@ -13,8 +13,11 @@ GRAPH_NAME = "pointy_rag_kg"
 
 
 def cypher_sql(cypher: str) -> str:
-    """Return a SQL string that runs a Cypher query via AGE."""
-    return f"SELECT * FROM ag_catalog.cypher(%s, $$ {cypher} $$) AS (v agtype)"  # noqa: S608
+    """Return a SQL string that runs a Cypher query via AGE.
+
+    AGE requires the graph name as a SQL name constant, not a bind parameter.
+    """
+    return f"SELECT * FROM ag_catalog.cypher('{GRAPH_NAME}', $$ {cypher} $$) AS (v agtype)"  # noqa: S608
 
 
 def _parse_agtype_int(val: object) -> int:
@@ -64,7 +67,7 @@ def create_disclosure_node(ddoc: DisclosureDoc, conn: psycopg.Connection) -> Non
         f"n.title = '{escape_cypher(ddoc.title)}', "
         f"n.node_type = 'disclosure'"
     )
-    conn.execute(cypher_sql(cypher), (GRAPH_NAME,))
+    conn.execute(cypher_sql(cypher))
 
 
 def create_chunk_node(chunk: Chunk, document_id: str, conn: psycopg.Connection) -> None:
@@ -75,7 +78,7 @@ def create_chunk_node(chunk: Chunk, document_id: str, conn: psycopg.Connection) 
         f"n.document_id = '{escape_cypher(document_id)}', "
         f"n.node_type = 'chunk'"
     )
-    conn.execute(cypher_sql(cypher), (GRAPH_NAME,))
+    conn.execute(cypher_sql(cypher))
 
 
 def create_contains_edge(
@@ -88,13 +91,13 @@ def create_contains_edge(
         f"MERGE (parent)-[r:CONTAINS]->(child) "
         f"ON CREATE SET r.ordering = {ordering}"
     )
-    conn.execute(cypher_sql(cypher), (GRAPH_NAME,))
+    conn.execute(cypher_sql(cypher))
 
 
 def node_exists(node_id: str, conn: psycopg.Connection) -> bool:
     """Return True if a node with the given node_id already exists in the graph."""
     cypher = f"MATCH (n {{node_id: '{escape_cypher(node_id)}'}}) RETURN count(n)"
-    row = conn.execute(cypher_sql(cypher), (GRAPH_NAME,)).fetchone()
+    row = conn.execute(cypher_sql(cypher)).fetchone()
     return bool(row and _parse_agtype_int(row[0]) > 0)
 
 
@@ -136,7 +139,7 @@ def create_similar_to_edges(
             f"(b {{node_id: '{escape_cypher(candidate_id)}'}}) "
             f"CREATE (a)-[:SIMILAR_TO {{score: {score}, created_at: '{now}'}}]->(b)"
         )
-        conn.execute(cypher_sql(cypher), (GRAPH_NAME,))
+        conn.execute(cypher_sql(cypher))
         created += 1
     return created
 
@@ -144,14 +147,14 @@ def create_similar_to_edges(
 def delete_document_graph_data(doc_id: str, conn: psycopg.Connection) -> None:
     """Delete all graph nodes (and edges) for a document. Used for re-ingestion."""
     cypher = f"MATCH (n {{document_id: '{escape_cypher(doc_id)}'}}) DETACH DELETE n"
-    conn.execute(cypher_sql(cypher), (GRAPH_NAME,))
+    conn.execute(cypher_sql(cypher))
 
 
 def get_graph_stats(conn: psycopg.Connection) -> dict:
     """Return counts of nodes and edges in the knowledge graph."""
 
     def _fetch_count(cypher: str) -> int:
-        row = conn.execute(cypher_sql(cypher), (GRAPH_NAME,)).fetchone()
+        row = conn.execute(cypher_sql(cypher)).fetchone()
         return _parse_agtype_int(row[0]) if row else 0
 
     return {
