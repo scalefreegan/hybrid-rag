@@ -16,8 +16,8 @@ class Settings(BaseModel):
     kg_max_similar_neighbors: int = Field(default=20, ge=1)
     kg_hierarchy_levels_up: int = Field(default=1, ge=1)
     kg_similar_hops: int = Field(default=1, ge=1)
-    agent_timeout: int = Field(default=120, ge=10)
-    agent_segment_max_chars: int = Field(default=20_000, ge=1000)
+    agent_timeout: int = Field(default=300, ge=10)
+    agent_segment_max_chars: int = Field(default=80_000, ge=1000)
     agent_concurrency: int = Field(default=3, ge=1)
 
 
@@ -37,9 +37,9 @@ def get_settings() -> Settings:
         kg_max_similar_neighbors=int(os.getenv("POINTY_KG_MAX_NEIGHBORS", "20")),
         kg_hierarchy_levels_up=int(os.getenv("POINTY_KG_HIERARCHY_LEVELS_UP", "1")),
         kg_similar_hops=int(os.getenv("POINTY_KG_SIMILAR_HOPS", "1")),
-        agent_timeout=int(os.getenv("POINTY_AGENT_TIMEOUT", "120")),
+        agent_timeout=int(os.getenv("POINTY_AGENT_TIMEOUT", "300")),
         agent_segment_max_chars=int(
-            os.getenv("POINTY_AGENT_SEGMENT_MAX_CHARS", "20000")
+            os.getenv("POINTY_AGENT_SEGMENT_MAX_CHARS", "80000")
         ),
         agent_concurrency=int(os.getenv("POINTY_AGENT_CONCURRENCY", "3")),
     )

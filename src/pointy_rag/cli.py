@@ -27,8 +27,21 @@ def _app_callback(
         Path | None,
         typer.Option("--workspace", "-w", help="Path to a pointy-rag workspace"),
     ] = None,
+    verbose: Annotated[
+        bool,
+        typer.Option("--verbose", "-v", help="Enable detailed logging"),
+    ] = False,
 ):
     """Global options."""
+    import logging
+
+    if verbose:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(name)s %(message)s",
+            datefmt="%H:%M:%S",
+        )
+
     from pointy_rag.workspace import find_workspace, set_active_workspace
 
     ws = find_workspace(workspace)

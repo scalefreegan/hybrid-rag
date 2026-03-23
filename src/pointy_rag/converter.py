@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -199,17 +200,13 @@ _CLEANUP_SYSTEM_PROMPT = (
 
 
 async def run_cleanup_agent(text: str, fmt: DocumentFormat, timeout: int = 120) -> str:
-    """Clean up a single raw text segment via agent."""
-    from pointy_rag.claude_agent import run_agent
+    """Clean up a single raw text segment via agent.
 
+    On timeout, retries once with 2x the timeout.
+    """
     prompt = f"Clean up the following raw extracted text:\n\n{text}"
     system_prompt = _CLEANUP_SYSTEM_PROMPT.format(fmt=fmt.value.upper())
-
-    return await run_agent(
-        prompt=prompt,
-        system_prompt=system_prompt,
-        timeout=timeout,
-    )
+    return await _run_agent_with_retry(prompt, system_prompt, timeout, "Cleanup")
 
 
 # ---------------------------------------------------------------------------
@@ -265,35 +262,48 @@ def _split_text_at_paragraphs(text: str, target_size: int, overlap: int) -> list
     return windows
 
 
+async def _run_agent_with_retry(
+    prompt: str, system_prompt: str, timeout: int, label: str = "agent",
+) -> str:
+    """Run an agent call with one retry at 2x timeout on TimeoutError."""
+    from pointy_rag.claude_agent import run_agent
+
+    try:
+        return await run_agent(prompt=prompt, system_prompt=system_prompt, timeout=timeout)
+    except TimeoutError:
+        retry_timeout = timeout * 2
+        logger.warning("%s timed out after %ds, retrying with %ds", label, timeout, retry_timeout)
+        return await run_agent(prompt=prompt, system_prompt=system_prompt, timeout=retry_timeout)
+
+
 async def run_restructure_agent(
     text: str, title: str, timeout: int = 120
 ) -> str:
-    """Restructure cleaned text into well-formatted markdown via agent."""
-    from pointy_rag.claude_agent import run_agent
+    """Restructure cleaned text into well-formatted markdown via agent.
 
+    On timeout, retries once with 2x the timeout.
+    """
     system_prompt = _RESTRUCTURE_SYSTEM_PROMPT.format(title=title)
 
     if len(text) <= _RESTRUCTURE_WINDOW_SIZE:
         prompt = f"Restructure the following text into markdown:\n\n{text}"
-        return await run_agent(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            timeout=timeout,
-        )
+        return await _run_agent_with_retry(prompt, system_prompt, timeout, "Restructure")
 
     # Windowed restructuring for large texts
     windows = _split_text_at_paragraphs(text, _RESTRUCTURE_WINDOW_SIZE // 2, _RESTRUCTURE_OVERLAP)
+    logger.info("Restructuring in %d windows (%d chars total)", len(windows), len(text))
     results: list[str] = []
     for i, window in enumerate(windows):
+        logger.info("Restructure window %d/%d (%d chars)...", i + 1, len(windows), len(window))
+        win_start = time.monotonic()
         prompt = (
             f"Restructure part {i + 1} of {len(windows)} of this document into markdown. "
             f"Continue from where the previous part left off.\n\n{window}"
         )
-        result = await run_agent(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            timeout=timeout,
+        result = await _run_agent_with_retry(
+            prompt, system_prompt, timeout, f"Restructure window {i + 1}/{len(windows)}",
         )
+        logger.info("Restructure window %d/%d done (%.1fs)", i + 1, len(windows), time.monotonic() - win_start)
         results.append(result)
 
     return "\n\n".join(results)
@@ -339,25 +349,46 @@ async def run_conversion_pipeline(
     # Stage 1: Cleanup (parallel)
     sem = asyncio.Semaphore(concurrency)
     completed = 0
+    stage1_start = time.monotonic()
 
     async def _cleanup_one(seg: RawSegment) -> str:
         nonlocal completed
         async with sem:
+            seg_start = time.monotonic()
+            logger.info(
+                "Cleanup starting: [%d/%d] %s (%d chars)",
+                seg.index + 1, len(grouped), seg.label, len(seg.text),
+            )
             result = await run_cleanup_agent(seg.text, fmt, timeout=timeout)
+            elapsed = time.monotonic() - seg_start
             completed += 1
+            logger.info(
+                "Cleanup finished: [%d/%d] %s (%.1fs, %d→%d chars)",
+                completed, len(grouped), seg.label, elapsed,
+                len(seg.text), len(result),
+            )
             _progress(f"Cleaning segment {completed}/{len(grouped)}...")
             return result
 
     _progress(f"Cleaning {len(grouped)} segment(s)...")
     cleaned_parts = await asyncio.gather(*[_cleanup_one(seg) for seg in grouped])
     cleaned_text = "\n\n".join(cleaned_parts)
-    logger.info("Cleanup complete, %d chars", len(cleaned_text))
+    stage1_elapsed = time.monotonic() - stage1_start
+    logger.info(
+        "Stage 1 (cleanup) complete: %d segments in %.1fs, %d chars total",
+        len(grouped), stage1_elapsed, len(cleaned_text),
+    )
 
     # Stage 2: Restructure
     title = source_path.stem.replace("_", " ")
     _progress("Restructuring markdown...")
+    stage2_start = time.monotonic()
     markdown = await run_restructure_agent(cleaned_text, title, timeout=timeout)
-    logger.info("Restructure complete, %d chars", len(markdown))
+    stage2_elapsed = time.monotonic() - stage2_start
+    logger.info(
+        "Stage 2 (restructure) complete: %.1fs, %d→%d chars",
+        stage2_elapsed, len(cleaned_text), len(markdown),
+    )
 
     return markdown
 
