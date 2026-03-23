@@ -84,12 +84,16 @@ def create_chunk_node(chunk: Chunk, document_id: str, conn: psycopg.Connection) 
 def create_contains_edge(
     parent_id: str, child_id: str, ordering: int, conn: psycopg.Connection
 ) -> None:
-    """Idempotent CONTAINS edge creation using MERGE (safe for re-runs)."""
+    """Idempotent CONTAINS edge creation using MERGE (safe for re-runs).
+
+    AGE does not support ON CREATE SET for edge MERGE, so we set ordering
+    unconditionally via SET.
+    """
     cypher = (
         f"MATCH (parent {{node_id: '{escape_cypher(parent_id)}'}}), "
         f"(child {{node_id: '{escape_cypher(child_id)}'}}) "
         f"MERGE (parent)-[r:CONTAINS]->(child) "
-        f"ON CREATE SET r.ordering = {ordering}"
+        f"SET r.ordering = {ordering}"
     )
     conn.execute(cypher_sql(cypher))
 
