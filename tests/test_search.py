@@ -3,6 +3,7 @@
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
+import psycopg
 import pytest
 
 from pointy_rag.models import (
@@ -249,7 +250,7 @@ class TestGraphSearch:
         result = graph_search("test query", mock_conn)
 
         assert len(result.vector_results) == 1
-        assert result.reference_document == ""
+        assert result.reference_document is None
         assert result.node_count == 0
         assert result.edge_count == 0
 
@@ -269,7 +270,7 @@ class TestGraphSearch:
         result = graph_search("test query", mock_conn)
 
         assert result.vector_results == []
-        assert result.reference_document == ""
+        assert result.reference_document is None
         assert result.node_count == 0
 
     @patch("pointy_rag.search.embed_query")
@@ -280,7 +281,7 @@ class TestGraphSearch:
     ):
         mock_embed.return_value = sample_embedding
         mock_settings.return_value.kg_enabled = True
-        mock_build.side_effect = RuntimeError("AGE unavailable")
+        mock_build.side_effect = psycopg.Error("AGE unavailable")
 
         cursor = MagicMock()
         cursor.execute.return_value = cursor
@@ -290,7 +291,7 @@ class TestGraphSearch:
         result = graph_search("test query", mock_conn)
 
         assert len(result.vector_results) == 1
-        assert result.reference_document == ""
+        assert result.reference_document is None
         assert result.node_count == 0
 
 

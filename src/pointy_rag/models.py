@@ -5,7 +5,7 @@ from enum import IntEnum, StrEnum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class DisclosureLevel(IntEnum):
@@ -56,6 +56,25 @@ class SearchResult(BaseModel):
 
 class GraphSearchResult(BaseModel):
     vector_results: list[SearchResult]  # Original pgvector matches
-    reference_document: str  # Assembled llms.txt markdown
-    node_count: int  # Nodes in context subgraph
-    edge_count: int  # Edges traversed
+    reference_document: str | None = None  # Assembled llms.txt markdown
+    node_count: int = Field(ge=0)  # Nodes in context subgraph
+    edge_count: int = Field(ge=0)  # Edges traversed
+
+
+class ExploreResult(BaseModel):
+    vector_results: list[SearchResult]  # Original pgvector matches
+    overview: str | None = None  # Layer 1: compact structured index
+    llms_txt: str | None = None  # Layer 2: detailed navigational TOC
+    contents: dict[str, str] = Field(default_factory=dict)  # node_id -> md
+    node_count: int = Field(ge=0)  # Nodes in context subgraph
+    edge_count: int = Field(ge=0)  # Edges traversed
+
+    @model_validator(mode="after")
+    def _layers_consistent(self) -> "ExploreResult":
+        """Ensure the three explore layers are all-or-nothing."""
+        has_overview = self.overview is not None
+        has_llms = self.llms_txt is not None
+        if has_overview != has_llms:
+            msg = "overview and llms_txt must both be None or both be set"
+            raise ValueError(msg)
+        return self

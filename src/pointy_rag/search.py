@@ -1,5 +1,7 @@
 """Pointer-based vector search for pointy-rag."""
 
+import logging
+
 import psycopg
 import psycopg.rows
 
@@ -9,9 +11,12 @@ from pointy_rag.models import (
     Chunk,
     DisclosureDoc,
     Document,
+    ExploreResult,
     GraphSearchResult,
     SearchResult,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def search(
@@ -191,7 +196,7 @@ def graph_search(
     if not get_settings().kg_enabled or not results:
         return GraphSearchResult(
             vector_results=results,
-            reference_document="",
+            reference_document=None,
             node_count=0,
             edge_count=0,
         )
@@ -202,10 +207,11 @@ def graph_search(
             node_ids, conn, hierarchy_levels_up, include_similar
         )
         reference_document = llms_txt.assemble_reference(subgraph, conn)
-    except Exception:
+    except psycopg.Error:
+        logger.warning("Graph expansion failed for graph_search", exc_info=True)
         return GraphSearchResult(
             vector_results=results,
-            reference_document="",
+            reference_document=None,
             node_count=0,
             edge_count=0,
         )
@@ -213,6 +219,67 @@ def graph_search(
     return GraphSearchResult(
         vector_results=results,
         reference_document=reference_document,
+        node_count=len(subgraph["nodes"]),
+        edge_count=len(subgraph["edges"]),
+    )
+
+
+def explore(
+    query: str,
+    conn: psycopg.Connection,
+    limit: int = 10,
+    threshold: float = 0.6,
+    hierarchy_levels_up: int = 3,
+    include_similar: bool = True,
+    similar_hops: int = 2,
+) -> ExploreResult:
+    """Run vector search and produce a three-layer progressive disclosure package.
+
+    Deeper/wider traversal defaults than graph_search for thorough exploration.
+
+    Returns:
+        ExploreResult with overview, llms_txt, and per-node content files.
+        Falls back to empty result if KG is disabled or traversal fails.
+    """
+    from pointy_rag import graph_query, llms_txt
+    from pointy_rag.config import get_settings
+
+    results = search(query, conn, limit=limit, threshold=threshold)
+
+    if not get_settings().kg_enabled or not results:
+        return ExploreResult(
+            vector_results=results,
+            overview=None,
+            llms_txt=None,
+            contents={},
+            node_count=0,
+            edge_count=0,
+        )
+
+    node_ids = [r.chunk.id for r in results]
+    try:
+        subgraph = graph_query.build_context_subgraph(
+            node_ids, conn, hierarchy_levels_up, include_similar, similar_hops
+        )
+        overview, llms_txt_doc, contents = llms_txt.assemble_explore(
+            subgraph, conn, query
+        )
+    except psycopg.Error:
+        logger.warning("Graph expansion failed for explore", exc_info=True)
+        return ExploreResult(
+            vector_results=results,
+            overview=None,
+            llms_txt=None,
+            contents={},
+            node_count=0,
+            edge_count=0,
+        )
+
+    return ExploreResult(
+        vector_results=results,
+        overview=overview,
+        llms_txt=llms_txt_doc,
+        contents=contents,
         node_count=len(subgraph["nodes"]),
         edge_count=len(subgraph["edges"]),
     )

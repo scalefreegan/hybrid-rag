@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlparse, urlunparse
 
+import psycopg
 import typer
 from rich.console import Console
 
@@ -323,12 +324,84 @@ def graph_search_cmd(
         f"{result.edge_count} similarity edges[/]"
     )
 
-    if result.reference_document:
+    if result.reference_document is not None:
         console.print(result.reference_document)
     else:
         console.print(
             "[yellow]No graph context available (KG disabled or no results).[/]"
         )
+
+
+@app.command()
+def explore(
+    query: Annotated[str, typer.Argument(help="Search query")],
+    limit: Annotated[
+        int,
+        typer.Option("--limit", "-n", help="Number of results", min=1, max=100),
+    ] = 10,
+    threshold: Annotated[
+        float,
+        typer.Option("--threshold", "-t", help="Minimum similarity score"),
+    ] = 0.6,
+    levels_up: Annotated[
+        int,
+        typer.Option("--levels-up", help="Hierarchy levels to walk up per match"),
+    ] = 3,
+    no_similar: Annotated[
+        bool,
+        typer.Option("--no-similar", help="Skip SIMILAR_TO edge traversal"),
+    ] = False,
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="Output directory"),
+    ] = None,
+):
+    """Explore query results as a three-layer progressive disclosure package."""
+    from pointy_rag.db import get_connection
+    from pointy_rag.search import explore as explore_search
+
+    if output is None:
+        output = Path(f"./explore-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}")
+
+    try:
+        with get_connection() as conn:
+            result = explore_search(
+                query,
+                conn,
+                limit=limit,
+                threshold=threshold,
+                hierarchy_levels_up=levels_up,
+                include_similar=not no_similar,
+            )
+    except Exception as exc:
+        console.print(f"[bold red]Error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(
+        f"[dim]{len(result.vector_results)} vector matches, "
+        f"{result.node_count} nodes in context graph, "
+        f"{result.edge_count} similarity edges[/]"
+    )
+
+    if result.overview is None:
+        console.print(
+            "[yellow]No graph context available (KG disabled or no results).[/]"
+        )
+        raise typer.Exit()
+
+    # Write the three-layer package
+    contents_dir = output / "contents"
+    contents_dir.mkdir(parents=True, exist_ok=True)
+
+    (output / "overview.md").write_text(result.overview)
+    if result.llms_txt is not None:
+        (output / "llms.txt").write_text(result.llms_txt)
+
+    for node_id, content in result.contents.items():
+        (contents_dir / f"{node_id}.md").write_text(content)
+
+    n_files = 2 + len(result.contents)
+    console.print(f"Wrote {n_files} files to {output}/")
 
 
 @app.command("graph-status")
@@ -523,41 +596,54 @@ def graph_backfill():
             ) as progress:
                 doc_task = progress.add_task("Backfilling...", total=len(docs))
 
+                failed_docs: list[str] = []
                 for doc in docs:
                     doc_id = doc["id"]
                     title = doc["title"][:40]
                     progress.update(doc_task, description=f"Processing: {title}")
 
-                    ddocs = get_disclosure_docs_by_document(doc_id, conn)
-                    for ddoc in ddocs:
-                        is_new = not node_exists(ddoc.id, conn)
-                        create_disclosure_node(ddoc, conn)
-                        if is_new:
-                            total_nodes += 1
-                        if ddoc.parent_id:
+                    try:
+                        ddocs = get_disclosure_docs_by_document(doc_id, conn)
+                        for ddoc in ddocs:
+                            is_new = not node_exists(ddoc.id, conn)
+                            create_disclosure_node(ddoc, conn)
+                            if is_new:
+                                total_nodes += 1
+                            if ddoc.parent_id:
+                                merge_contains_edge(
+                                    ddoc.parent_id, ddoc.id, ddoc.ordering, conn
+                                )
+
+                        chunks = get_chunks_by_document(doc_id, conn)
+                        for chunk in chunks:
+                            is_new = not node_exists(chunk.id, conn)
+                            create_chunk_node(chunk, doc_id, conn)
+                            if is_new:
+                                total_nodes += 1
                             merge_contains_edge(
-                                ddoc.parent_id, ddoc.id, ddoc.ordering, conn
+                                chunk.disclosure_doc_id, chunk.id, 0, conn
                             )
+                            if is_new and chunk.embedding is not None:
+                                total_similarity_edges += create_similar_to_edges(
+                                    chunk, conn
+                                )
 
-                    chunks = get_chunks_by_document(doc_id, conn)
-                    for chunk in chunks:
-                        is_new = not node_exists(chunk.id, conn)
-                        create_chunk_node(chunk, doc_id, conn)
-                        if is_new:
-                            total_nodes += 1
-                        merge_contains_edge(chunk.disclosure_doc_id, chunk.id, 0, conn)
-                        if is_new and chunk.embedding is not None:
-                            total_similarity_edges += create_similar_to_edges(
-                                chunk, conn
-                            )
+                        conn.commit()
+                    except psycopg.Error as exc:
+                        console.print(
+                            f"[yellow]Warning:[/] Failed to backfill {title}: {exc}"
+                        )
+                        conn.rollback()
+                        failed_docs.append(doc_id)
 
-                    conn.commit()
                     progress.advance(doc_task)
 
         console.print("\n[bold green]\u2713[/] Backfill complete.")
-        console.print(f"  Documents processed: {len(docs)}")
+        console.print(f"  Documents processed: {len(docs) - len(failed_docs)}")
         console.print(f"  Nodes created:       {total_nodes}")
         console.print(f"  Similarity edges:    {total_similarity_edges}")
+        if failed_docs:
+            console.print(f"  [yellow]Failed:              {len(failed_docs)}[/]")
 
     except typer.Exit:
         raise
