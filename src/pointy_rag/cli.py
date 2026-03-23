@@ -113,6 +113,10 @@ def ingest(
         bool,
         typer.Option("--no-agent", help="Skip Claude agent (fallback, no disclosure)"),
     ] = False,
+    timeout: Annotated[
+        int | None,
+        typer.Option("--timeout", help="Agent timeout in seconds per stage"),
+    ] = None,
 ):
     """Ingest documents into the vector store."""
     import asyncio
@@ -134,6 +138,9 @@ def ingest(
     ) as progress:
         task = progress.add_task(f"Ingesting {len(paths)} file(s)...", total=None)
 
+        def update_progress(msg: str):
+            progress.update(task, description=msg)
+
         try:
             with get_connection() as conn:
                 succeeded, failed = asyncio.run(
@@ -142,6 +149,8 @@ def ingest(
                         conn,
                         output_dir=output_dir,
                         use_agent=not no_agent,
+                        timeout=timeout,
+                        on_progress=update_progress,
                     )
                 )
         except Exception as exc:
@@ -175,20 +184,44 @@ def convert(
         bool,
         typer.Option("--no-agent", help="Skip Claude agent, use library extraction"),
     ] = False,
+    timeout: Annotated[
+        int | None,
+        typer.Option("--timeout", help="Agent timeout in seconds per stage"),
+    ] = None,
 ):
     """Convert PDF or EPUB files to markdown without ingesting."""
     import asyncio
 
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+
     from pointy_rag.converter import convert_to_markdown
 
-    for path in paths:
-        try:
-            markdown, out_path = asyncio.run(
-                convert_to_markdown(path, output_dir=output_dir, use_agent=not no_agent)
-            )
-            console.print(f"[bold green]\u2713[/] {path.name} -> {out_path}")
-        except Exception as exc:
-            console.print(f"[bold red]\u2717[/] {path.name}: {exc}")
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        for path in paths:
+            task = progress.add_task(f"Converting {path.name}...", total=None)
+
+            def update_progress(msg: str):
+                progress.update(task, description=msg)
+
+            try:
+                markdown, out_path = asyncio.run(
+                    convert_to_markdown(
+                        path,
+                        output_dir=output_dir,
+                        use_agent=not no_agent,
+                        timeout=timeout,
+                        on_progress=update_progress,
+                    )
+                )
+                progress.remove_task(task)
+                console.print(f"[bold green]\u2713[/] {path.name} -> {out_path}")
+            except Exception as exc:
+                progress.remove_task(task)
+                console.print(f"[bold red]\u2717[/] {path.name}: {exc}")
 
 
 @app.command()

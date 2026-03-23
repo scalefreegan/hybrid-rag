@@ -1,6 +1,7 @@
 """End-to-end ingestion pipeline for pointy-rag."""
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 import psycopg
@@ -25,6 +26,8 @@ async def ingest_document(
     conn: psycopg.Connection,
     output_dir: str | Path | None = None,
     use_agent: bool = True,
+    timeout: int | None = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> Document:
     """Ingest a single document through the full pipeline.
 
@@ -54,7 +57,11 @@ async def ingest_document(
     # --- Stage 1: Convert to markdown ---
     fmt = detect_format(source_path)
     markdown, md_path = await convert_to_markdown(
-        source_path, output_dir=output_dir, use_agent=use_agent
+        source_path,
+        output_dir=output_dir,
+        use_agent=use_agent,
+        timeout=timeout,
+        on_progress=on_progress,
     )
     logger.info("Converted %s to markdown (%d chars)", source_path.name, len(markdown))
 
@@ -198,6 +205,8 @@ async def ingest_paths(
     conn: psycopg.Connection,
     output_dir: str | Path | None = None,
     use_agent: bool = True,
+    timeout: int | None = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> tuple[list[Document], list[tuple[Path, Exception]]]:
     """Ingest multiple documents sequentially.
 
@@ -213,7 +222,12 @@ async def ingest_paths(
     for path in paths:
         try:
             doc = await ingest_document(
-                path, conn, output_dir=output_dir, use_agent=use_agent
+                path,
+                conn,
+                output_dir=output_dir,
+                use_agent=use_agent,
+                timeout=timeout,
+                on_progress=on_progress,
             )
             succeeded.append(doc)
         except Exception as exc:
