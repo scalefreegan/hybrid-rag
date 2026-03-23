@@ -896,3 +896,85 @@ def test_prepare_subgraph_skips_none_node_id(mock_conn):
 
     assert "m1" in prepared.nodes_index
     assert None not in prepared.nodes_index
+
+
+# ---------------------------------------------------------------------------
+# Orphan related nodes rendered in overview and llms_txt
+# ---------------------------------------------------------------------------
+
+
+def test_overview_renders_orphan_related(mock_conn):
+    """Related nodes unreachable from hierarchy must still appear in overview."""
+    match_node = _node("m1", "Match", 1)
+    sim_node = _node("s1", "Similar", 2, doc_id="doc-2")
+    sg = _subgraph(
+        nodes=[match_node, sim_node],
+        matches=["m1"],
+        hierarchy={},  # no hierarchy — both are orphans
+        edges=[{"type": "SIMILAR_TO", "source": "m1", "target": "s1", "score": 0.9}],
+    )
+    ddocs = {
+        "m1": _ddoc("m1", "Match", "match content", level=1),
+        "s1": _ddoc("s1", "Similar", "sim content", level=2, doc_id="doc-2"),
+    }
+    with (
+        patch(
+            "pointy_rag.llms_txt.db.get_disclosure_doc",
+            side_effect=lambda nid, _: ddocs.get(nid),
+        ),
+        patch("pointy_rag.llms_txt.db.get_document", return_value=None),
+    ):
+        result = assemble_explore_overview(sg, mock_conn, "test")
+
+    assert "Similar" in result
+    assert "[related]" in result
+
+
+def test_llms_txt_renders_orphan_related(mock_conn):
+    """Related nodes unreachable from hierarchy must still appear in llms.txt."""
+    match_node = _node("m1", "Match", 1)
+    sim_node = _node("s1", "Orphan Related", 2, doc_id="doc-2")
+    sg = _subgraph(
+        nodes=[match_node, sim_node],
+        matches=["m1"],
+        hierarchy={},
+        edges=[{"type": "SIMILAR_TO", "source": "m1", "target": "s1", "score": 0.9}],
+    )
+    ddocs = {
+        "m1": _ddoc("m1", "Match", "match content", level=1),
+        "s1": _ddoc("s1", "Orphan Related", "sim content", level=2, doc_id="doc-2"),
+    }
+    with (
+        patch(
+            "pointy_rag.llms_txt.db.get_disclosure_doc",
+            side_effect=lambda nid, _: ddocs.get(nid),
+        ),
+        patch("pointy_rag.llms_txt.db.get_document", return_value=None),
+    ):
+        result = assemble_explore_llms_txt(sg, mock_conn, "test")
+
+    assert "[ref:s1]" in result
+    assert "Related: Orphan Related" in result
+
+
+# ---------------------------------------------------------------------------
+# Backslash escaping in YAML frontmatter
+# ---------------------------------------------------------------------------
+
+
+def test_contents_escapes_backslashes_in_title(mock_conn):
+    """Titles with backslashes must be properly escaped in YAML frontmatter."""
+    sg = _subgraph(
+        nodes=[_node("m1", "C:\\path\\file", 1)],
+        matches=["m1"],
+        hierarchy={"m1": []},
+    )
+    ddoc = _ddoc("m1", "C:\\path\\file", "content", level=1)
+    with (
+        patch("pointy_rag.llms_txt.db.get_disclosure_doc", return_value=ddoc),
+        patch("pointy_rag.llms_txt.db.get_document", return_value=None),
+    ):
+        result = assemble_explore_contents(sg, mock_conn)
+
+    fm = result["m1"]
+    assert 'title: "C:\\\\path\\\\file"' in fm

@@ -172,10 +172,10 @@ def assemble_reference(subgraph: SubgraphDict, conn: psycopg.Connection) -> str:
 
     sections = [s for s in (render_subtree(rid) for rid in root_ids) if s]
 
-    # Render any match nodes not reachable via the hierarchy (e.g. no ancestors)
-    for match_id in sorted(match_ids):
-        if match_id not in rendered:
-            section = render_subtree(match_id)
+    # Render any match/related nodes not reachable via the hierarchy
+    for nid in sorted(match_ids | similar_ids):
+        if nid not in rendered:
+            section = render_subtree(nid)
             if section:
                 sections.append(section)
 
@@ -351,10 +351,10 @@ def assemble_explore_overview(
     for rid in root_ids:
         _render_tree(rid)
 
-    # Orphan match nodes not reachable via hierarchy
-    for mid in sorted(match_ids):
-        if mid not in rendered:
-            _render_tree(mid, indent=1)
+    # Orphan match/related nodes not reachable via hierarchy
+    for nid in sorted(match_ids | similar_ids):
+        if nid not in rendered:
+            _render_tree(nid, indent=1)
 
     lines.append("")
     lines.append("Detail: llms.txt | Full content: contents/{node_id}.md")
@@ -439,9 +439,10 @@ def assemble_explore_llms_txt(
         if section:
             sections.append(section)
 
-    for mid in sorted(match_ids):
-        if mid not in rendered:
-            section = render_subtree(mid)
+    # Orphan match/related nodes not reachable via hierarchy
+    for nid in sorted(match_ids | similar_ids):
+        if nid not in rendered:
+            section = render_subtree(nid)
             if section:
                 sections.append(section)
 
@@ -481,9 +482,9 @@ def assemble_explore_contents(
         doc_id = node.get("document_id") or ""
         doc_title = _resolve_doc_title(doc_id, conn)
 
-        # YAML frontmatter — escape quotes to prevent injection
-        safe_title = title.replace('"', '\\"')
-        safe_doc_title = doc_title.replace('"', '\\"')
+        # YAML frontmatter — escape backslashes then quotes for valid YAML
+        safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
+        safe_doc_title = doc_title.replace("\\", "\\\\").replace('"', '\\"')
         fm_lines = [
             "---",
             f"node_id: {node_id}",

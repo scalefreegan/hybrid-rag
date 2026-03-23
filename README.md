@@ -39,7 +39,8 @@ converter ──► markdown
                               knowledge graph (Apache AGE)
                                 ├── CONTAINS edges (hierarchy)
                                 ├── SIMILAR_TO edges (cross-doc)
-                                └── graph-search ──► llms.txt reference doc
+                                ├── graph-search ──► llms.txt reference doc
+                                └── explore ──► 3-layer package (overview + llms.txt + contents/)
 ```
 
 ### Module map
@@ -52,15 +53,15 @@ converter ──► markdown
 | `chunker.py` | Markdown-aware text chunking with overlap |
 | `embeddings.py` | Voyage AI embedding client (voyage-4-lite, 1024-dim) |
 | `db.py` | PostgreSQL/pgvector schema, CRUD, connection management |
-| `models.py` | Pydantic data models (Document, DisclosureDoc, Chunk, SearchResult, GraphSearchResult) |
+| `models.py` | Pydantic data models (Document, DisclosureDoc, Chunk, SearchResult, GraphSearchResult, ExploreResult) |
 | `disclosure.py` | 4-level disclosure hierarchy generator |
 | `claude_agent.py` | Headless Claude Code subprocess wrapper |
 | `pointer_mapper.py` | Maps text chunks to disclosure docs by heading/Jaccard similarity |
 | `ingest.py` | End-to-end ingestion pipeline (with optional KG population) |
-| `search.py` | Vector search with disclosure pointers, drill-down, and graph enrichment |
+| `search.py` | Vector search with disclosure pointers, drill-down, graph enrichment, and explore mode |
 | `graph.py` | Apache AGE knowledge graph — node/edge CRUD, similarity edges |
 | `graph_query.py` | Graph traversal — neighbor expansion, hierarchy walking, subgraph assembly |
-| `llms_txt.py` | Renders context subgraphs as llms.txt-style structured markdown references |
+| `llms_txt.py` | Renders context subgraphs as llms.txt references and three-layer explore packages |
 
 ## Prerequisites
 
@@ -105,6 +106,7 @@ uv run pointy-rag drill <disclosure-doc-id>
 | `convert` | Convert PDF/EPUB to markdown without ingesting | `--output-dir`, `--no-agent` |
 | `search` | Semantic search with pointer-based results | `--limit`, `--threshold`, `--level`, `--content`, `--graph` |
 | `graph-search` | Search + knowledge graph enrichment → llms.txt reference | `--limit`, `--threshold`, `--levels-up`, `--no-similar` |
+| `explore` | Three-layer progressive disclosure package (overview + llms.txt + per-node content) | `--limit`, `--threshold`, `--levels-up`, `--no-similar`, `--output` |
 | `graph-status` | Show knowledge graph node/edge statistics | |
 | `graph-backfill` | Migrate existing data into the knowledge graph | |
 | `drill` | Drill into a disclosure doc and view its children | `--content` |
@@ -189,6 +191,34 @@ uv run pointy-rag graph-backfill
 
 The graph stores structure only — content and embeddings remain in PostgreSQL. This keeps the graph lean and avoids data duplication.
 
+## Explore Mode
+
+Explore mode produces a **three-layer progressive disclosure package** — ideal for feeding to AI agents that need structured context with drill-down capability.
+
+```bash
+# Generate an explore package
+uv run pointy-rag explore "transformer architecture" --output ./explore-output
+
+# Output structure:
+# explore-output/
+# ├── overview.md          # Layer 1: ultra-compact index with stats and hierarchy
+# ├── llms.txt             # Layer 2: navigational TOC with [ref:] pointers and snippets
+# └── contents/            # Layer 3: full content per node with YAML frontmatter
+#     ├── node-abc.md
+#     ├── node-def.md
+#     └── ...
+```
+
+### Layers
+
+| Layer | File | Purpose |
+|-------|------|---------|
+| 1 | `overview.md` | Minimal-token structured index — stats, hierarchy tree, match/related badges |
+| 2 | `llms.txt` | Detailed navigational TOC with heading depths, level labels, content snippets, and `→ contents/{id}.md` links |
+| 3 | `contents/{id}.md` | Full node content with YAML frontmatter (node_id, title, level, document, role) and ancestor context inlined |
+
+Explore uses deeper traversal defaults than `graph-search` (3 hierarchy levels up, 2 similarity hops) for thorough context gathering.
+
 ## Claude Code Skill
 
 This repo ships a [Claude Code skill](https://code.claude.com/docs/en/skills) so Claude can guide you through CLI usage interactively. Install it with the built-in command:
@@ -246,8 +276,8 @@ src/pointy_rag/
 ├── claude_agent.py      # Claude Code subprocess wrapper
 ├── pointer_mapper.py    # Chunk → disclosure doc mapping
 ├── ingest.py            # End-to-end ingestion pipeline
-├── search.py            # Vector search + drill-down + graph enrichment
+├── search.py            # Vector search + drill-down + graph enrichment + explore
 ├── graph.py             # Apache AGE knowledge graph CRUD
-├── graph_query.py       # Graph traversal + subgraph assembly
-└── llms_txt.py          # llms.txt-style reference doc renderer
+├── graph_query.py       # Graph traversal + subgraph assembly (SubgraphDict)
+└── llms_txt.py          # llms.txt references + three-layer explore assembly
 ```
