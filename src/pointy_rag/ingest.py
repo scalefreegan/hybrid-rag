@@ -157,6 +157,9 @@ async def ingest_document(
                 create_similar_to_edges,
             )
 
+            conn.execute("LOAD 'age'")
+            conn.execute("SET search_path = ag_catalog, '$user', public")
+
             for ddoc in disclosure_docs:
                 create_disclosure_node(ddoc, conn)
                 if ddoc.parent_id:
