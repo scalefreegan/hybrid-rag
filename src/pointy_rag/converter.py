@@ -143,6 +143,54 @@ def group_segments(
     current_len = 0
 
     for seg in segments:
+        # Split oversized segments at paragraph boundaries first
+        if len(seg.text) > max_chars:
+            paragraphs = seg.text.split("\n\n")
+            sub_texts: list[str] = []
+            sub_len = 0
+            part_num = 0
+            for para in paragraphs:
+                if sub_len + len(para) > max_chars and sub_texts:
+                    part_num += 1
+                    grouped.append(
+                        RawSegment(
+                            text="\n\n".join(sub_texts),
+                            label=f"{seg.label} (part {part_num})",
+                            index=len(grouped),
+                        )
+                    )
+                    sub_texts = []
+                    sub_len = 0
+                sub_texts.append(para)
+                sub_len += len(para)
+            if sub_texts:
+                part_num += 1
+                grouped.append(
+                    RawSegment(
+                        text="\n\n".join(sub_texts),
+                        label=f"{seg.label} (part {part_num})" if part_num > 1 else seg.label,
+                        index=len(grouped),
+                    )
+                )
+            # Reset accumulator since we flushed directly
+            if current_texts:
+                label = (
+                    current_labels[0]
+                    if len(current_labels) == 1
+                    else f"{current_labels[0]} – {current_labels[-1]}"
+                )
+                grouped.append(
+                    RawSegment(
+                        text="\n".join(current_texts),
+                        label=label,
+                        index=len(grouped),
+                    )
+                )
+                current_texts = []
+                current_labels = []
+                current_len = 0
+            continue
+
         seg_len = len(seg.text)
 
         if current_texts and current_len + seg_len > max_chars:
