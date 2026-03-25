@@ -92,14 +92,15 @@ def _force_split_text(text: str, max_tokens: int) -> list[str]:
             current_tokens += stokens
         if current:
             chunks.append(" ".join(current))
-        # Recursively force-split any chunk still too large
-        result: list[str] = []
-        for chunk in chunks:
-            if count_tokens(chunk) > max_tokens:
-                result.extend(_force_split_text(chunk, max_tokens))
-            else:
-                result.append(chunk)
-        return result
+        if len(chunks) > 1:
+            # Only recurse if we actually split into multiple pieces
+            result: list[str] = []
+            for chunk in chunks:
+                if count_tokens(chunk) > max_tokens:
+                    result.extend(_force_split_text(chunk, max_tokens))
+                else:
+                    result.append(chunk)
+            return result
 
     # Fall back to word splitting
     words = text.split()
