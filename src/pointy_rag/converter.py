@@ -650,11 +650,12 @@ async def run_conversion_pipeline(
                 "Batch starting: slices %d–%d (%d slices)",
                 batch_indices[0], batch_indices[-1], len(batch_indices),
             )
+            batch_timeout = timeout * len(batch_indices)
             await run_cleanup_and_structure_batch(
                 batch_dir, fmt, title,
-                timeout=timeout,
+                timeout=batch_timeout,
                 model=model,
-                max_turns=50,
+                max_turns=max(50, len(batch_indices) * 5),
             )
             elapsed = time.monotonic() - batch_start
             completed_batches += 1
