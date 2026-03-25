@@ -18,6 +18,7 @@ class DisclosureLevel(IntEnum):
 class DocumentFormat(StrEnum):
     pdf = "pdf"
     epub = "epub"
+    md = "md"
 
 
 class Document(BaseModel):

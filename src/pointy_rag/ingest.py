@@ -16,7 +16,7 @@ from pointy_rag.db import (
     insert_document,
 )
 from pointy_rag.embeddings import embed_texts
-from pointy_rag.models import Document
+from pointy_rag.models import Document, DocumentFormat
 
 logger = logging.getLogger(__name__)
 
@@ -55,15 +55,20 @@ async def ingest_document(
     source_path = Path(source_path).resolve()
 
     # --- Stage 1: Convert to markdown ---
-    fmt = detect_format(source_path)
-    markdown, md_path = await convert_to_markdown(
-        source_path,
-        output_dir=output_dir,
-        use_agent=use_agent,
-        timeout=timeout,
-        on_progress=on_progress,
-    )
-    logger.info("Converted %s to markdown (%d chars)", source_path.name, len(markdown))
+    if source_path.suffix.lower() == ".md":
+        markdown = source_path.read_text(encoding="utf-8")
+        fmt = DocumentFormat.md
+        logger.info("Read existing markdown %s (%d chars)", source_path.name, len(markdown))
+    else:
+        fmt = detect_format(source_path)
+        markdown, md_path = await convert_to_markdown(
+            source_path,
+            output_dir=output_dir,
+            use_agent=use_agent,
+            timeout=timeout,
+            on_progress=on_progress,
+        )
+        logger.info("Converted %s to markdown (%d chars)", source_path.name, len(markdown))
 
     # --- Stage 2: Chunk ---
     text_chunks = chunk_markdown(markdown)
@@ -231,7 +236,7 @@ async def ingest_paths(
             )
             succeeded.append(doc)
         except Exception as exc:
-            logger.error("Failed to ingest %s: %s", path, exc)
+            logger.error("Failed to ingest %s: %s", path, exc, exc_info=True)
             failed.append((path, exc))
 
     return succeeded, failed

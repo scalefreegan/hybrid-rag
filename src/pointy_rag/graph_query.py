@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 def _cypher_sql_multi(cypher: str, *col_names: str) -> str:
     """Return SQL for a Cypher query returning multiple agtype columns."""
     col_defs = ", ".join(f"{c} agtype" for c in col_names)
-    return f"SELECT * FROM ag_catalog.cypher(%s, $$ {cypher} $$) AS ({col_defs})"  # noqa: S608
+    return f"SELECT * FROM ag_catalog.cypher('{GRAPH_NAME}', $$ {cypher} $$) AS ({col_defs})"  # noqa: S608
 
 
 def _parse_agtype(val: object) -> dict | list | None:
@@ -98,7 +98,7 @@ def get_neighbors(
         f"RETURN neighbor, r"
     )
     rows = conn.execute(
-        _cypher_sql_multi(cypher, "neighbor", "r"), (GRAPH_NAME,)
+        _cypher_sql_multi(cypher, "neighbor", "r")
     ).fetchall()
 
     results: list[dict] = []
@@ -140,7 +140,7 @@ def walk_hierarchy_up(
         f"(start {{node_id: '{escape_cypher(node_id)}'}}) "
         f"RETURN nodes(path)"
     )
-    rows = conn.execute(cypher_sql(cypher), (GRAPH_NAME,)).fetchall()
+    rows = conn.execute(cypher_sql(cypher)).fetchall()
 
     # Use the longest matching path to get the fullest ancestor chain
     best_path: list = []

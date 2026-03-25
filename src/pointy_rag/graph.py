@@ -35,10 +35,10 @@ def _parse_agtype_int(val: object) -> int:
 def escape_cypher(s: str) -> str:
     """Escape a string for use in a Cypher string literal.
 
-    Backslashes are doubled first, then single quotes are doubled.
-    Cypher uses doubled single quotes (not backslash-escaped).
+    Backslashes are doubled first, then single quotes are backslash-escaped.
+    AGE uses backslash-escaped single quotes (not doubled).
     """
-    return s.replace("\\", "\\\\").replace("'", "''")
+    return s.replace("\\", "\\\\").replace("'", "\\'")
 
 
 def ensure_graph(conn: psycopg.Connection) -> None:
@@ -46,16 +46,11 @@ def ensure_graph(conn: psycopg.Connection) -> None:
     conn.execute("CREATE EXTENSION IF NOT EXISTS age")
     conn.execute("LOAD 'age'")
     conn.execute("SET search_path = ag_catalog, '$user', public")
-    try:
-        conn.execute(
-            "SELECT ag_catalog.create_graph(%s)",
-            (GRAPH_NAME,),
-        )
-    except psycopg.errors.DuplicateSchema:
-        # Graph already exists — rollback and restore AGE session state
-        conn.rollback()
-        conn.execute("LOAD 'age'")
-        conn.execute("SET search_path = ag_catalog, '$user', public")
+    row = conn.execute(
+        "SELECT 1 FROM ag_catalog.ag_graph WHERE name = %s", (GRAPH_NAME,)
+    ).fetchone()
+    if row is None:
+        conn.execute("SELECT ag_catalog.create_graph(%s)", (GRAPH_NAME,))
 
 
 def create_disclosure_node(ddoc: DisclosureDoc, conn: psycopg.Connection) -> None:

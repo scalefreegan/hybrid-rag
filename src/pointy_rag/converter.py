@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -16,8 +18,8 @@ from pointy_rag.models import DocumentFormat
 
 logger = logging.getLogger(__name__)
 
-# Maximum file size for conversion (50 MB)
-MAX_FILE_SIZE = 50 * 1024 * 1024
+# Maximum file size for conversion (200 MB)
+MAX_FILE_SIZE = 200 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +186,113 @@ def group_segments(
 
 
 # ---------------------------------------------------------------------------
-# Stage 1: Agent cleanup (per-segment)
+# Slice I/O helpers
+# ---------------------------------------------------------------------------
+
+
+def _write_slices(work_dir: Path, segments: list[RawSegment]) -> list[Path]:
+    """Write each segment to a numbered file in *work_dir* and return paths."""
+    work_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    for seg in segments:
+        p = work_dir / f"slice_{seg.index:04d}.md"
+        p.write_text(seg.text, encoding="utf-8")
+        paths.append(p)
+    return paths
+
+
+_DATA_TABLE_FIELDS = re.compile(
+    r"(?=(?:Also Known As|Characteristics|Purpose|Alpha Acid Composition|"
+    r"Beta Acid Composition|Cohumulone Composition|Country|Cone Size|"
+    r"Cone Density|Seasonal Maturity|Yield Amount|Growth Rate|"
+    r"Resistant to|Susceptible to|Storability|Ease of Harvest|"
+    r"Total Oil|Myrcene Oil|Humulene Oil|Caryophyllene Oil|"
+    r"Farnesene Oil|Substitutes|Style Guide|References))"
+)
+
+
+def _normalize_slices(slice_paths: list[Path], max_line_len: int = 400) -> None:
+    """Break long lines in slice files so the Edit tool can process them."""
+    for path in slice_paths:
+        text = path.read_text(encoding="utf-8")
+        lines = text.split("\n")
+        normalized: list[str] = []
+        for line in lines:
+            if len(line) <= max_line_len:
+                normalized.append(line)
+                continue
+            if "Also Known As" in line or "Alpha Acid Composition" in line:
+                parts = _DATA_TABLE_FIELDS.split(line)
+                parts = [p.strip() for p in parts if p.strip()]
+                if len(parts) > 1:
+                    normalized.extend(parts)
+                    continue
+            words = line.split(" ")
+            if len(words) > 1:
+                current: list[str] = []
+                current_len = 0
+                for word in words:
+                    if current_len + len(word) > max_line_len and current:
+                        normalized.append(" ".join(current))
+                        current = []
+                        current_len = 0
+                    current.append(word)
+                    current_len += len(word) + 1
+                if current:
+                    normalized.append(" ".join(current))
+            else:
+                for i in range(0, len(line), max_line_len):
+                    normalized.append(line[i : i + max_line_len])
+        path.write_text("\n".join(normalized), encoding="utf-8")
+
+
+def _create_agent_workdir(
+    work_dir: Path, slice_paths: list[Path], idx: int,
+) -> Path:
+    """Create an isolated directory with a single slice and adjacent context copies."""
+    agent_dir = work_dir / f"agent_{idx:04d}"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+
+    import shutil
+
+    # Copy the target slice
+    shutil.copy2(slice_paths[idx], agent_dir / slice_paths[idx].name)
+
+    # Adjacent context
+    if idx > 0:
+        shutil.copy2(slice_paths[idx - 1], agent_dir / "context_prev.md")
+    if idx < len(slice_paths) - 1:
+        shutil.copy2(slice_paths[idx + 1], agent_dir / "context_next.md")
+
+    return agent_dir
+
+
+def _create_batch_workdir(
+    work_dir: Path, slice_paths: list[Path], batch_indices: list[int],
+) -> Path:
+    """Create an isolated directory with multiple slices and boundary context."""
+    batch_id = batch_indices[0]
+    batch_dir = work_dir / f"batch_{batch_id:04d}"
+    batch_dir.mkdir(parents=True, exist_ok=True)
+
+    import shutil
+
+    # Copy all slices in the batch
+    for idx in batch_indices:
+        shutil.copy2(slice_paths[idx], batch_dir / slice_paths[idx].name)
+
+    # Boundary context: slice before first and after last
+    first, last = batch_indices[0], batch_indices[-1]
+    if first > 0:
+        shutil.copy2(slice_paths[first - 1], batch_dir / "context_prev.md")
+    if last < len(slice_paths) - 1:
+        shutil.copy2(slice_paths[last + 1], batch_dir / "context_next.md")
+
+    return batch_dir
+
+
+# ---------------------------------------------------------------------------
+# Stage 1: Agent cleanup (per-segment) — legacy single-segment interface
 # ---------------------------------------------------------------------------
 
 _CLEANUP_SYSTEM_PROMPT = (
@@ -210,7 +318,107 @@ async def run_cleanup_agent(text: str, fmt: DocumentFormat, timeout: int = 120) 
 
 
 # ---------------------------------------------------------------------------
-# Stage 2: Agent restructure (full text or windowed)
+# Stage 1b: Batch cleanup-and-structure agent
+# ---------------------------------------------------------------------------
+
+_CLEANUP_AND_STRUCTURE_BATCH_PROMPT = (
+    "You are a document conversion specialist. You will process a batch of text "
+    "slices extracted from a {fmt} document titled '{title}'.\n\n"
+    "Your working directory contains:\n"
+    "- Slice files named slice_NNNN.md (the files you must process)\n"
+    "- context_prev.md (preceding context, read-only — do NOT modify)\n"
+    "- context_next.md (following context, read-only — do NOT modify)\n\n"
+    "For EACH slice file, in order:\n"
+    "1. Read the file\n"
+    "2. Clean it: remove page numbers, headers/footers, boilerplate, fix "
+    "hyphenated line breaks, collapse excessive whitespace\n"
+    "3. Structure it as well-formatted markdown with proper heading hierarchy:\n"
+    "   - # for top-level chapters/parts\n"
+    "   - ## for sections\n"
+    "   - ### for subsections\n"
+    "   - Use context files to understand where this slice fits in the document\n"
+    "4. Write the cleaned, structured result back to the SAME file\n\n"
+    "Use python3 scripts via the Bash tool for any text processing that benefits "
+    "from regex or programmatic manipulation.\n\n"
+    "Preserve ALL meaningful content — do not summarize or omit anything.\n"
+    "Process each file sequentially and write results back in place."
+)
+
+
+async def run_cleanup_and_structure_batch(
+    batch_dir: Path,
+    fmt: DocumentFormat,
+    title: str,
+    timeout: int = 300,
+    model: str | None = None,
+    max_turns: int = 50,
+) -> None:
+    """Run cleanup and structuring on a batch of slices in *batch_dir*."""
+    system_prompt = _CLEANUP_AND_STRUCTURE_BATCH_PROMPT.format(
+        fmt=fmt.value.upper(), title=title,
+    )
+    slice_files = sorted(batch_dir.glob("slice_*.md"))
+    file_list = ", ".join(f.name for f in slice_files)
+    prompt = (
+        f"Process these slice files in order: {file_list}\n"
+        f"Working directory: {batch_dir}"
+    )
+    await _run_agent_with_retry(
+        prompt,
+        system_prompt,
+        timeout,
+        label=f"Batch {batch_dir.name}",
+        model=model,
+        max_turns=max_turns,
+        allowed_tools=["Read", "Bash", "Write", "Glob", "Edit"],
+        cwd=str(batch_dir),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Final cleanup pass
+# ---------------------------------------------------------------------------
+
+_FINAL_CLEANUP_PROMPT = (
+    "You are a markdown editor. You have the final assembled markdown document "
+    "for '{title}'. Do a single editorial pass:\n"
+    "- Fix any duplicate headings introduced at batch boundaries\n"
+    "- Ensure consistent heading hierarchy (# > ## > ### > ####)\n"
+    "- Remove any residual conversion artifacts or repeated lines at boundaries\n"
+    "- Ensure smooth transitions between sections\n"
+    "- Do NOT remove or summarize any content\n\n"
+    "Read the file, edit it in place, and write the result back."
+)
+
+
+async def run_final_cleanup(
+    output_path: Path,
+    title: str,
+    timeout: int = 300,
+    model: str | None = None,
+    max_turns: int = 30,
+) -> str:
+    """Run a single agent pass on the final assembled markdown."""
+    system_prompt = _FINAL_CLEANUP_PROMPT.format(title=title)
+    prompt = (
+        f"Edit the assembled markdown file at: {output_path}\n"
+        f"Working directory: {output_path.parent}"
+    )
+    await _run_agent_with_retry(
+        prompt,
+        system_prompt,
+        timeout,
+        label="Final cleanup",
+        model=model,
+        max_turns=max_turns,
+        allowed_tools=["Read", "Bash", "Write", "Glob", "Edit"],
+        cwd=str(output_path.parent),
+    )
+    return output_path.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: Agent restructure (full text or windowed) — legacy interface
 # ---------------------------------------------------------------------------
 
 _RESTRUCTURE_SYSTEM_PROMPT = (
@@ -263,17 +471,35 @@ def _split_text_at_paragraphs(text: str, target_size: int, overlap: int) -> list
 
 
 async def _run_agent_with_retry(
-    prompt: str, system_prompt: str, timeout: int, label: str = "agent",
+    prompt: str,
+    system_prompt: str,
+    timeout: int,
+    label: str = "agent",
+    model: str = "haiku",
+    max_turns: int | None = None,
+    allowed_tools: list[str] | None = None,
+    cwd: str | None = None,
 ) -> str:
     """Run an agent call with one retry at 2x timeout on TimeoutError."""
     from pointy_rag.claude_agent import run_agent
 
+    kwargs: dict = dict(prompt=prompt, system_prompt=system_prompt, timeout=timeout)
+    if model is not None:
+        kwargs["model"] = model
+    if max_turns is not None:
+        kwargs["max_turns"] = max_turns
+    if allowed_tools is not None:
+        kwargs["allowed_tools"] = allowed_tools
+    if cwd is not None:
+        kwargs["cwd"] = cwd
+
     try:
-        return await run_agent(prompt=prompt, system_prompt=system_prompt, timeout=timeout)
+        return await run_agent(**kwargs)
     except TimeoutError:
         retry_timeout = timeout * 2
         logger.warning("%s timed out after %ds, retrying with %ds", label, timeout, retry_timeout)
-        return await run_agent(prompt=prompt, system_prompt=system_prompt, timeout=retry_timeout)
+        kwargs["timeout"] = retry_timeout
+        return await run_agent(**kwargs)
 
 
 async def run_restructure_agent(
@@ -319,14 +545,16 @@ async def run_conversion_pipeline(
     fmt: DocumentFormat,
     timeout: int = 120,
     max_segment_chars: int = 20_000,
-    concurrency: int = 3,
+    concurrency: int = 2,
     on_progress: Callable[[str], None] | None = None,
+    batch_size: int = 10,
+    model: str | None = None,
 ) -> str:
     """Run the full multi-stage conversion pipeline.
 
-    Stage 0: Library extraction → segments
-    Stage 1: Agent cleanup per segment (parallel, bounded concurrency)
-    Stage 2: Agent restructure on reassembled text
+    Stage 0: Library extraction → segments → slices on disk
+    Stage 1: Batch cleanup-and-structure (batch_size slices per agent session)
+    Stage 2: Concatenation + final cleanup pass
 
     No fallbacks — any stage failure raises.
     """
@@ -346,48 +574,83 @@ async def run_conversion_pipeline(
     grouped = group_segments(segments, max_chars=max_segment_chars)
     logger.info("Grouped into %d segment(s) for cleanup", len(grouped))
 
-    # Stage 1: Cleanup (parallel)
+    title = source_path.stem.replace("_", " ")
+
+    # Write slices to disk
+    work_dir = Path(tempfile.mkdtemp(prefix="converter_"))
+    slice_paths = _write_slices(work_dir, grouped)
+    logger.info("Wrote %d slices to %s", len(slice_paths), work_dir)
+
+    # Normalize long lines so Edit tool can handle them
+    _normalize_slices(slice_paths)
+
+    # Stage 1: Batch cleanup-and-structure (parallel batches, bounded concurrency)
     sem = asyncio.Semaphore(concurrency)
-    completed = 0
+    batches: list[list[int]] = []
+    for i in range(0, len(slice_paths), batch_size):
+        batches.append(list(range(i, min(i + batch_size, len(slice_paths)))))
+
+    completed_batches = 0
     stage1_start = time.monotonic()
 
-    async def _cleanup_one(seg: RawSegment) -> str:
-        nonlocal completed
+    async def _process_batch(batch_indices: list[int]) -> None:
+        nonlocal completed_batches
         async with sem:
-            seg_start = time.monotonic()
+            batch_dir = _create_batch_workdir(work_dir, slice_paths, batch_indices)
+            batch_start = time.monotonic()
             logger.info(
-                "Cleanup starting: [%d/%d] %s (%d chars)",
-                seg.index + 1, len(grouped), seg.label, len(seg.text),
+                "Batch starting: slices %d–%d (%d slices)",
+                batch_indices[0], batch_indices[-1], len(batch_indices),
             )
-            result = await run_cleanup_agent(seg.text, fmt, timeout=timeout)
-            elapsed = time.monotonic() - seg_start
-            completed += 1
+            await run_cleanup_and_structure_batch(
+                batch_dir, fmt, title,
+                timeout=timeout,
+                model=model,
+                max_turns=50,
+            )
+            elapsed = time.monotonic() - batch_start
+            completed_batches += 1
             logger.info(
-                "Cleanup finished: [%d/%d] %s (%.1fs, %d→%d chars)",
-                completed, len(grouped), seg.label, elapsed,
-                len(seg.text), len(result),
+                "Batch finished: slices %d–%d (%.1fs) [%d/%d batches]",
+                batch_indices[0], batch_indices[-1], elapsed,
+                completed_batches, len(batches),
             )
-            _progress(f"Cleaning segment {completed}/{len(grouped)}...")
-            return result
+            _progress(f"Processed batch {completed_batches}/{len(batches)}...")
 
-    _progress(f"Cleaning {len(grouped)} segment(s)...")
-    cleaned_parts = await asyncio.gather(*[_cleanup_one(seg) for seg in grouped])
-    cleaned_text = "\n\n".join(cleaned_parts)
+            # Copy processed slices back to main work_dir
+            import shutil
+            for idx in batch_indices:
+                src = batch_dir / slice_paths[idx].name
+                if src.exists():
+                    shutil.copy2(src, slice_paths[idx])
+
+    _progress(f"Processing {len(batches)} batch(es) of up to {batch_size} slices...")
+    await asyncio.gather(*[_process_batch(b) for b in batches])
+
     stage1_elapsed = time.monotonic() - stage1_start
     logger.info(
-        "Stage 1 (cleanup) complete: %d segments in %.1fs, %d chars total",
-        len(grouped), stage1_elapsed, len(cleaned_text),
+        "Stage 1 (batch cleanup+structure) complete: %d batches in %.1fs",
+        len(batches), stage1_elapsed,
     )
 
-    # Stage 2: Restructure
-    title = source_path.stem.replace("_", " ")
-    _progress("Restructuring markdown...")
+    # Concatenate processed slices
+    parts = []
+    for sp in slice_paths:
+        parts.append(sp.read_text(encoding="utf-8"))
+    markdown = "\n\n".join(parts)
+
+    # Stage 2: Final cleanup pass
+    _progress("Running final cleanup pass...")
     stage2_start = time.monotonic()
-    markdown = await run_restructure_agent(cleaned_text, title, timeout=timeout)
+    final_path = work_dir / "final.md"
+    final_path.write_text(markdown, encoding="utf-8")
+    markdown = await run_final_cleanup(
+        final_path, title, timeout=timeout, model=model,
+    )
     stage2_elapsed = time.monotonic() - stage2_start
     logger.info(
-        "Stage 2 (restructure) complete: %.1fs, %d→%d chars",
-        stage2_elapsed, len(cleaned_text), len(markdown),
+        "Stage 2 (final cleanup) complete: %.1fs, %d chars",
+        stage2_elapsed, len(markdown),
     )
 
     return markdown

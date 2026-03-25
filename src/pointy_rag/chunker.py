@@ -55,26 +55,128 @@ def split_into_sections(text: str) -> list[tuple[str | None, str]]:
     return sections
 
 
-def _split_body_with_overlap(
+def _heading_level(heading: str) -> int:
+    """Return the heading level (number of leading '#' chars)."""
+    match = re.match(r"^(#{1,6})", heading)
+    return len(match.group(1)) if match else 0
+
+
+def _context_heading(heading_stack: list[tuple[int, str]]) -> str | None:
+    """Build a contextual heading from the heading hierarchy.
+
+    Returns something like "## Cascade > ### Characteristics".
+    """
+    if not heading_stack:
+        return None
+    return " > ".join(h for _, h in heading_stack)
+
+
+def _force_split_text(text: str, max_tokens: int) -> list[str]:
+    """Split text that exceeds max_tokens at sentence, then word, then char boundaries."""
+    if count_tokens(text) <= max_tokens:
+        return [text]
+
+    # Try splitting at sentence boundaries
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    if len(sentences) > 1:
+        chunks: list[str] = []
+        current: list[str] = []
+        current_tokens = 0
+        for sentence in sentences:
+            stokens = count_tokens(sentence)
+            if current_tokens + stokens > max_tokens and current:
+                chunks.append(" ".join(current))
+                current = []
+                current_tokens = 0
+            current.append(sentence)
+            current_tokens += stokens
+        if current:
+            chunks.append(" ".join(current))
+        # Recursively force-split any chunk still too large
+        result: list[str] = []
+        for chunk in chunks:
+            if count_tokens(chunk) > max_tokens:
+                result.extend(_force_split_text(chunk, max_tokens))
+            else:
+                result.append(chunk)
+        return result
+
+    # Fall back to word splitting
+    words = text.split()
+    if len(words) > 1:
+        chunks = []
+        current = []
+        current_tokens = 0
+        for word in words:
+            wtokens = count_tokens(word)
+            if current_tokens + wtokens > max_tokens and current:
+                chunks.append(" ".join(current))
+                current = []
+                current_tokens = 0
+            current.append(word)
+            current_tokens += wtokens
+        if current:
+            chunks.append(" ".join(current))
+        return chunks
+
+    # Last resort: split at character boundaries
+    max_chars = max_tokens * 4
+    return [text[i : i + max_chars] for i in range(0, len(text), max_chars)]
+
+
+def _split_by_paragraphs(
     body: str,
     heading: str | None,
-    target_size: int,
-    overlap: int,
+    max_tokens: int,
     start_index: int,
 ) -> list[TextChunk]:
-    """Split a body text into overlapping line-based chunks."""
+    """Split body text at paragraph boundaries (\\n\\n).
+
+    If a single paragraph exceeds max_tokens, force-split it at sentences
+    then words.
+    """
+    paragraphs = re.split(r"\n\n+", body)
     chunks: list[TextChunk] = []
-    lines = body.split("\n")
-    current_lines: list[str] = []
+    current_parts: list[str] = []
     current_tokens = 0
     chunk_index = start_index
 
-    for line in lines:
-        line_tokens = count_tokens(line)
+    for para in paragraphs:
+        para_tokens = count_tokens(para)
 
-        if current_tokens + line_tokens > target_size and current_lines:
+        # If a single paragraph is too large, force-split it
+        if para_tokens > max_tokens:
+            # Flush what we have first
+            if current_parts:
+                content = "\n\n".join(current_parts)
+                chunks.append(
+                    TextChunk(
+                        content=content,
+                        token_count=count_tokens(content),
+                        chunk_index=chunk_index,
+                        heading=heading,
+                    )
+                )
+                chunk_index += 1
+                current_parts = []
+                current_tokens = 0
+
+            # Force-split the oversized paragraph
+            for piece in _force_split_text(para, max_tokens):
+                chunks.append(
+                    TextChunk(
+                        content=piece,
+                        token_count=count_tokens(piece),
+                        chunk_index=chunk_index,
+                        heading=heading,
+                    )
+                )
+                chunk_index += 1
+            continue
+
+        if current_tokens + para_tokens > max_tokens and current_parts:
             # Emit current chunk
-            content = "\n".join(current_lines)
+            content = "\n\n".join(current_parts)
             chunks.append(
                 TextChunk(
                     content=content,
@@ -84,27 +186,15 @@ def _split_body_with_overlap(
                 )
             )
             chunk_index += 1
+            current_parts = []
+            current_tokens = 0
 
-            # Build overlap from tail of current chunk
-            overlap_lines: list[str] = []
-            overlap_tokens = 0
-            for prev_line in reversed(current_lines):
-                prev_tokens = count_tokens(prev_line)
-                if overlap_tokens + prev_tokens <= overlap:
-                    overlap_lines.insert(0, prev_line)
-                    overlap_tokens += prev_tokens
-                else:
-                    break
-
-            current_lines = overlap_lines
-            current_tokens = overlap_tokens
-
-        current_lines.append(line)
-        current_tokens += line_tokens
+        current_parts.append(para)
+        current_tokens += para_tokens
 
     # Emit final chunk
-    if current_lines:
-        content = "\n".join(current_lines)
+    if current_parts:
+        content = "\n\n".join(current_parts)
         chunks.append(
             TextChunk(
                 content=content,
@@ -120,19 +210,18 @@ def _split_body_with_overlap(
 def chunk_markdown(
     text: str,
     target_size: int = 1500,
-    overlap: int = 200,
 ) -> list[TextChunk]:
     """Split markdown text into chunks respecting heading boundaries.
 
     Strategy:
     1. Split on markdown headings (##, ###, etc.) first
-    2. If a section exceeds target_size, further split with line-based overlap
-    3. Each chunk carries its parent heading for context
+    2. Track heading hierarchy so sub-sections carry parent context
+    3. If a section exceeds target_size, split at paragraph boundaries
+    4. Force-split oversized paragraphs at sentences then words
 
     Args:
         text: Markdown text to chunk
         target_size: Target token count per chunk
-        overlap: Token overlap between consecutive chunks within a section
 
     Returns:
         List of TextChunk instances with sequential chunk_index values
@@ -144,10 +233,24 @@ def chunk_markdown(
     chunks: list[TextChunk] = []
     chunk_index = 0
 
+    # Track heading hierarchy: list of (level, heading_text)
+    heading_stack: list[tuple[int, str]] = []
+
     for heading, body in sections:
-        # Skip sections with no body content (e.g. heading-only lines)
+        # Update heading stack based on current heading
+        if heading is not None:
+            level = _heading_level(heading)
+            # Pop headings at same or deeper level
+            while heading_stack and heading_stack[-1][0] >= level:
+                heading_stack.pop()
+            heading_stack.append((level, heading))
+
+        # Skip sections with no body content
         if not body:
             continue
+
+        # Build contextual heading from hierarchy
+        ctx_heading = _context_heading(heading_stack)
 
         body_tokens = count_tokens(body)
 
@@ -158,14 +261,14 @@ def chunk_markdown(
                     content=body,
                     token_count=body_tokens,
                     chunk_index=chunk_index,
-                    heading=heading,
+                    heading=ctx_heading,
                 )
             )
             chunk_index += 1
         else:
-            # Split with overlap
-            sub_chunks = _split_body_with_overlap(
-                body, heading, target_size, overlap, chunk_index
+            # Split at paragraph boundaries
+            sub_chunks = _split_by_paragraphs(
+                body, ctx_heading, target_size, chunk_index
             )
             chunks.extend(sub_chunks)
             chunk_index += len(sub_chunks)

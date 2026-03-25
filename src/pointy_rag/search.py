@@ -203,6 +203,8 @@ def graph_search(
 
     node_ids = [r.chunk.id for r in results]
     try:
+        conn.execute("LOAD 'age'")
+        conn.execute("SET search_path = ag_catalog, '$user', public")
         subgraph = graph_query.build_context_subgraph(
             node_ids, conn, hierarchy_levels_up, include_similar
         )
@@ -219,8 +221,8 @@ def graph_search(
     return GraphSearchResult(
         vector_results=results,
         reference_document=reference_document,
-        node_count=len(subgraph["nodes"]),
-        edge_count=len(subgraph["edges"]),
+        node_count=len(subgraph.nodes),
+        edge_count=len(subgraph.edges),
     )
 
 
@@ -258,6 +260,8 @@ def explore(
 
     node_ids = [r.chunk.id for r in results]
     try:
+        conn.execute("LOAD 'age'")
+        conn.execute("SET search_path = ag_catalog, '$user', public")
         subgraph = graph_query.build_context_subgraph(
             node_ids, conn, hierarchy_levels_up, include_similar, similar_hops
         )
@@ -280,8 +284,8 @@ def explore(
         overview=overview,
         llms_txt=llms_txt_doc,
         contents=contents,
-        node_count=len(subgraph["nodes"]),
-        edge_count=len(subgraph["edges"]),
+        node_count=len(subgraph.nodes),
+        edge_count=len(subgraph.edges),
     )
 
 

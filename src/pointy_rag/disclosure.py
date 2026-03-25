@@ -6,7 +6,7 @@ import logging
 import psycopg
 import psycopg.rows
 
-from pointy_rag.chunker import split_into_sections
+from pointy_rag.chunker import count_tokens, split_into_sections
 from pointy_rag.claude_agent import run_agent
 from pointy_rag.db import (
     delete_disclosure_docs_by_level,
@@ -16,10 +16,16 @@ from pointy_rag.db import (
 from pointy_rag.models import DisclosureDoc, DisclosureLevel
 
 # Max concurrent agent calls for Level 2 generation.
-_AGENT_CONCURRENCY = 3
+_AGENT_CONCURRENCY = 5
 
 # Safety bound: refuse absurdly large text to avoid runaway agent costs.
 MAX_DISCLOSURE_TEXT_LENGTH = 500_000
+
+# Sections under this token count skip the agent and use content as-is.
+_L2_SKIP_THRESHOLD = 500  # tokens
+
+# Number of sections to batch together for L2 summarization.
+_L2_BATCH_SIZE = 15
 
 _LEVEL_INSTRUCTIONS = {
     0: "Produce a library-wide catalog summarizing all documents.",
@@ -109,41 +115,107 @@ async def generate_disclosure_hierarchy(
         return []
 
     # --- Level 2: agent summarizes each L3 doc ---
-    sem = asyncio.Semaphore(_AGENT_CONCURRENCY)
-
-    async def _summarize_section(l3: DisclosureDoc) -> DisclosureDoc:
-        async with sem:
-            summary = await run_disclosure_agent(
-                text=l3.content,
-                title=l3.title,
-                level=2,
-            )
-        return DisclosureDoc(
-            document_id=document_id,
-            level=DisclosureLevel.section_summary,
-            title=l3.title,
-            content=summary,
-            ordering=l3.ordering,
-        )
-
-    gather_results = await asyncio.gather(
-        *[_summarize_section(l3) for l3 in level3_docs],
-        return_exceptions=True,
-    )
+    # Short sections skip the agent entirely.
+    short_l3: list[DisclosureDoc] = []
+    needs_agent_l3: list[DisclosureDoc] = []
+    for l3 in level3_docs:
+        if count_tokens(l3.content) < _L2_SKIP_THRESHOLD:
+            short_l3.append(l3)
+        else:
+            needs_agent_l3.append(l3)
 
     level2_docs: list[DisclosureDoc] = []
     successful_l3_docs: list[DisclosureDoc] = []
-    for l3, result in zip(level3_docs, gather_results, strict=True):
-        if isinstance(result, BaseException):
-            _log.warning(
-                "L2 summary failed for section %r in document %s, skipping: %s",
-                l3.title,
-                document_id,
-                result,
+
+    # Promote short sections directly (content as-is).
+    for l3 in short_l3:
+        level2_docs.append(
+            DisclosureDoc(
+                document_id=document_id,
+                level=DisclosureLevel.section_summary,
+                title=l3.title,
+                content=l3.content,
+                ordering=l3.ordering,
             )
-        else:
-            level2_docs.append(result)
-            successful_l3_docs.append(l3)
+        )
+        successful_l3_docs.append(l3)
+
+    # Batch remaining sections for agent summarization.
+    sem = asyncio.Semaphore(_AGENT_CONCURRENCY)
+
+    async def _summarize_batch(
+        batch: list[DisclosureDoc],
+    ) -> list[tuple[DisclosureDoc, str]]:
+        combined = "\n\n---\n\n".join(
+            f"## {l3.title}\n{l3.content}" for l3 in batch
+        )
+        async with sem:
+            try:
+                response = await run_disclosure_agent(
+                    text=combined,
+                    title=f"Batch of {len(batch)} sections",
+                    level=2,
+                )
+                summaries = [s.strip() for s in response.split("---")]
+                # If the split count doesn't match, fall back per-section
+                if len(summaries) != len(batch):
+                    _log.warning(
+                        "Batch split mismatch (%d summaries vs %d sections), "
+                        "using raw content fallback",
+                        len(summaries),
+                        len(batch),
+                    )
+                    summaries = [l3.content[:500] for l3 in batch]
+            except Exception:
+                _log.warning(
+                    "L2 batch summarization failed for document %s, "
+                    "falling back to raw content",
+                    document_id,
+                    exc_info=True,
+                )
+                summaries = [l3.content[:500] for l3 in batch]
+        return list(zip(batch, summaries, strict=True))
+
+    # Create batches of _L2_BATCH_SIZE
+    batches: list[list[DisclosureDoc]] = []
+    for i in range(0, len(needs_agent_l3), _L2_BATCH_SIZE):
+        batches.append(needs_agent_l3[i : i + _L2_BATCH_SIZE])
+
+    if batches:
+        batch_results = await asyncio.gather(
+            *[_summarize_batch(b) for b in batches],
+            return_exceptions=True,
+        )
+        for batch, result in zip(batches, batch_results, strict=True):
+            if isinstance(result, BaseException):
+                _log.warning(
+                    "L2 batch failed for document %s, using raw content: %s",
+                    document_id,
+                    result,
+                )
+                for l3 in batch:
+                    level2_docs.append(
+                        DisclosureDoc(
+                            document_id=document_id,
+                            level=DisclosureLevel.section_summary,
+                            title=l3.title,
+                            content=l3.content[:500],
+                            ordering=l3.ordering,
+                        )
+                    )
+                    successful_l3_docs.append(l3)
+            else:
+                for l3, summary in result:
+                    level2_docs.append(
+                        DisclosureDoc(
+                            document_id=document_id,
+                            level=DisclosureLevel.section_summary,
+                            title=l3.title,
+                            content=summary,
+                            ordering=l3.ordering,
+                        )
+                    )
+                    successful_l3_docs.append(l3)
 
     if not level2_docs:
         return []
