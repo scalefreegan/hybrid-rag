@@ -89,6 +89,8 @@ async def ingest_document(
         if settings.kg_enabled:
             from pointy_rag.graph import delete_document_graph_data
 
+            conn.execute("LOAD 'age'")
+            conn.execute("SET search_path = ag_catalog, '$user', public")
             delete_document_graph_data(existing.id, conn)
         delete_document_data(existing.id, conn)
         conn.commit()
