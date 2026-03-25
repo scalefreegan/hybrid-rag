@@ -523,7 +523,7 @@ async def _run_agent_with_retry(
     system_prompt: str,
     timeout: int,
     label: str = "agent",
-    model: str = "haiku",
+    model: str = "sonnet",
     max_turns: int | None = None,
     allowed_tools: list[str] | None = None,
     cwd: str | None = None,
@@ -595,7 +595,7 @@ async def run_conversion_pipeline(
     max_segment_chars: int = 20_000,
     concurrency: int = 2,
     on_progress: Callable[[str], None] | None = None,
-    batch_size: int = 10,
+    batch_size: int = 20,
     model: str | None = None,
 ) -> str:
     """Run the full multi-stage conversion pipeline.
