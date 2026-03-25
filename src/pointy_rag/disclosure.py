@@ -146,21 +146,27 @@ async def generate_disclosure_hierarchy(
     async def _summarize_batch(
         batch: list[DisclosureDoc],
     ) -> list[tuple[DisclosureDoc, str]]:
-        combined = "\n\n---\n\n".join(
-            f"## {l3.title}\n{l3.content}" for l3 in batch
+        combined = "\n\n".join(
+            f"[SECTION {i+1}] {l3.title}\n{l3.content}" for i, l3 in enumerate(batch)
         )
         async with sem:
             try:
-                response = await run_disclosure_agent(
-                    text=combined,
-                    title=f"Batch of {len(batch)} sections",
-                    level=2,
+                prompt = (
+                    f"Produce a concise summary for EACH of the {len(batch)} "
+                    f"numbered sections below. Format your response as:\n\n"
+                    f"[SUMMARY 1]\nYour summary here\n\n"
+                    f"[SUMMARY 2]\nYour summary here\n\n"
+                    f"...and so on for all {len(batch)} sections.\n\n"
+                    f"<document>\n{combined}\n</document>"
                 )
-                summaries = [s.strip() for s in response.split("---")]
-                # If the split count doesn't match, fall back per-section
+                response = await run_agent(prompt, timeout=300, model="haiku")
+                # Parse numbered summaries
+                import re as _re
+                parts = _re.split(r"\[SUMMARY \d+\]\s*", response)
+                summaries = [s.strip() for s in parts if s.strip()]
                 if len(summaries) != len(batch):
                     _log.warning(
-                        "Batch split mismatch (%d summaries vs %d sections), "
+                        "Batch summary count mismatch (%d vs %d sections), "
                         "using raw content fallback",
                         len(summaries),
                         len(batch),
