@@ -19,6 +19,7 @@ class Settings(BaseModel):
     agent_timeout: int = Field(default=300, ge=10)
     agent_segment_max_chars: int = Field(default=10_000, ge=1000)
     agent_concurrency: int = Field(default=2, ge=1)
+    ocr_enabled: bool = True
 
 
 @lru_cache(maxsize=1)
@@ -42,4 +43,6 @@ def get_settings() -> Settings:
             os.getenv("POINTY_AGENT_SEGMENT_MAX_CHARS", "10000")
         ),
         agent_concurrency=int(os.getenv("POINTY_AGENT_CONCURRENCY", "2")),
+        ocr_enabled=os.getenv("POINTY_OCR_ENABLED", "true").lower()
+        not in ("false", "0", "no"),
     )

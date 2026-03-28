@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import shutil
 import tempfile
 import time
 from collections.abc import Callable
@@ -72,10 +73,15 @@ def detect_format(path: str | Path) -> DocumentFormat:
 # ---------------------------------------------------------------------------
 
 
+def _tesseract_available() -> bool:
+    """Check whether the tesseract binary is on PATH."""
+    return shutil.which("tesseract") is not None
+
+
 def extract_segments(path: Path, fmt: DocumentFormat) -> list[RawSegment]:
     """Extract text as a list of segments from a document.
 
-    PDF: one segment per page.
+    PDF: one segment per page (with Tesseract OCR fallback for scanned pages).
     EPUB: one segment per spine item (chapter).
     """
     path = Path(path)
@@ -89,16 +95,51 @@ def extract_segments(path: Path, fmt: DocumentFormat) -> list[RawSegment]:
     if fmt == DocumentFormat.pdf:
         import fitz  # pymupdf
 
+        from pointy_rag.config import get_settings
+
+        settings = get_settings()
+        ocr_enabled = settings.ocr_enabled and _tesseract_available()
+
+        if settings.ocr_enabled and not _tesseract_available():
+            logger.warning(
+                "OCR enabled but tesseract not found on PATH; "
+                "scanned pages will be skipped"
+            )
+
         segments: list[RawSegment] = []
+        ocr_page_count = 0
+        ocr_start = time.monotonic()
+
         with fitz.open(str(path)) as doc:
             if doc.is_encrypted:
                 raise ValueError(
                     f"PDF is password-protected and cannot be extracted: {path.name}"
                 )
+            total_pages = len(doc)
             for i, page in enumerate(doc):
                 text = page.get_text()
                 if text.strip():
                     segments.append(RawSegment(text=text, label=f"Page {i + 1}", index=i))
+                elif ocr_enabled:
+                    text = page.get_text(
+                        textpage=page.get_textpage_ocr(
+                            flags=0, language="eng", dpi=300,
+                        ),
+                    )
+                    if text.strip():
+                        segments.append(RawSegment(text=text, label=f"Page {i + 1}", index=i))
+                        ocr_page_count += 1
+                    if (i + 1) % 50 == 0:
+                        logger.info("OCR progress: %d/%d pages", i + 1, total_pages)
+
+        if ocr_page_count > 0:
+            ocr_elapsed = time.monotonic() - ocr_start
+            logger.info(
+                "OCR complete: %d/%d pages required OCR (%.1fs, %.2fs/page)",
+                ocr_page_count, total_pages, ocr_elapsed,
+                ocr_elapsed / ocr_page_count,
+            )
+
         return segments
 
     if fmt == DocumentFormat.epub:
