@@ -703,15 +703,44 @@ async def run_conversion_pipeline(
                     shutil.copy2(src, slice_paths[idx])
 
     _progress(f"Processing {len(batches)} batch(es) of up to {batch_size} slices...")
-    await asyncio.gather(*[_process_batch(b) for b in batches])
+
+    # Process in rounds of `concurrency` batches. If an entire round fails
+    # with content filter, skip remaining batches (they'll all fail too).
+    batch_queue = list(batches)
+    content_filter_skip = False
+    while batch_queue:
+        round_batches = batch_queue[:concurrency]
+        batch_queue = batch_queue[concurrency:]
+        failed_before = len(failed_slices)
+        round_slice_count = sum(len(b) for b in round_batches)
+
+        await asyncio.gather(*[_process_batch(b) for b in round_batches])
+
+        round_failed = len(failed_slices) - failed_before
+        if round_failed == round_slice_count and batch_queue:
+            # Every slice in this round was content-filtered — skip the rest
+            remaining_indices = [idx for b in batch_queue for idx in b]
+            failed_slices.extend(remaining_indices)
+            completed_batches += len(batch_queue)
+            logger.warning(
+                "All %d slices in round content-filtered — skipping %d "
+                "remaining batches (%d slices), proceeding to final cleanup",
+                round_slice_count, len(batch_queue), len(remaining_indices),
+            )
+            _progress(
+                f"Content filter active — skipped to final cleanup "
+                f"({len(remaining_indices)} slices kept as raw text)"
+            )
+            content_filter_skip = True
+            break
 
     stage1_elapsed = time.monotonic() - stage1_start
     if failed_slices:
         logger.warning(
             "Stage 1 complete: %d batches in %.1fs — %d/%d slices kept as raw text "
-            "(content filter). Failed slices: %s",
+            "(content filter)%s",
             len(batches), stage1_elapsed, len(failed_slices), len(slice_paths),
-            failed_slices,
+            " (early termination)" if content_filter_skip else "",
         )
     else:
         logger.info(
