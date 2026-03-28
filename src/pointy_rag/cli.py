@@ -130,6 +130,14 @@ def ingest(
         int | None,
         typer.Option("--timeout", help="Agent timeout in seconds per stage"),
     ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option("--model", help="Claude model for agent conversion (e.g. opus, sonnet)"),
+    ] = None,
+    batch_size: Annotated[
+        int,
+        typer.Option("--batch-size", help="Slices per agent batch"),
+    ] = 20,
 ):
     """Ingest documents into the vector store."""
     import asyncio
@@ -164,6 +172,8 @@ def ingest(
                         use_agent=not no_agent,
                         timeout=timeout,
                         on_progress=update_progress,
+                        model=model,
+                        batch_size=batch_size,
                     )
                 )
         except Exception as exc:
@@ -201,6 +211,14 @@ def convert(
         int | None,
         typer.Option("--timeout", help="Agent timeout in seconds per stage"),
     ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option("--model", help="Claude model for agent conversion (e.g. opus, sonnet)"),
+    ] = None,
+    batch_size: Annotated[
+        int,
+        typer.Option("--batch-size", help="Slices per agent batch"),
+    ] = 20,
 ):
     """Convert PDF or EPUB files to markdown without ingesting."""
     import asyncio
@@ -228,6 +246,8 @@ def convert(
                         use_agent=not no_agent,
                         timeout=timeout,
                         on_progress=update_progress,
+                        model=model,
+                        batch_size=batch_size,
                     )
                 )
                 progress.remove_task(task)

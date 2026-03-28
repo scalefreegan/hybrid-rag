@@ -79,9 +79,12 @@ async def run_agent(
 
     result_text: str | None = None
     is_error = False
+    stop_reason: str | None = None
+    permission_denials: list[str] = []
+    last_assistant_text: str | None = None
 
     async def _stream_stdout() -> None:
-        nonlocal result_text, is_error
+        nonlocal result_text, is_error, stop_reason, permission_denials, last_assistant_text
         assert proc.stdout is not None
         async for raw_line in proc.stdout:
             line = raw_line.decode("utf-8", errors="replace").strip()
@@ -95,10 +98,11 @@ async def run_agent(
             etype = event.get("type")
 
             if etype == "assistant":
-                # Log tool uses from the assistant message
+                # Log tool uses and text output from the assistant message
                 msg = event.get("message", {})
                 for block in msg.get("content", []):
-                    if block.get("type") == "tool_use":
+                    block_type = block.get("type")
+                    if block_type == "tool_use":
                         tool_name = block.get("name", "?")
                         tool_input = block.get("input", {})
                         if tool_name == "Read":
@@ -118,17 +122,28 @@ async def run_agent(
                             logger.info("  → Glob %s", pattern)
                         else:
                             logger.info("  → %s", tool_name)
+                    elif block_type == "text":
+                        text = block.get("text", "")
+                        if text.strip():
+                            last_assistant_text = text.strip()
 
             elif etype == "result":
                 result_text = event.get("result")
                 is_error = event.get("is_error", False)
+                stop_reason = event.get("stop_reason")
+                permission_denials = event.get("permission_denials", [])
                 duration = event.get("duration_ms", 0)
                 turns = event.get("num_turns", 0)
                 cost = event.get("total_cost_usd", 0)
+                subtype = event.get("subtype", "")
                 logger.info(
-                    "  Agent done: %d turns, %.1fs, $%.4f",
-                    turns, duration / 1000, cost,
+                    "  Agent done: %d turns, %.1fs, $%.4f (subtype=%s, stop=%s)",
+                    turns, duration / 1000, cost, subtype, stop_reason,
                 )
+                if permission_denials:
+                    logger.warning("  Permission denials: %s", permission_denials)
+                if is_error:
+                    logger.error("  Agent error result: %s", str(result_text)[:500])
 
     try:
         if timeout and timeout > 0:
@@ -148,8 +163,23 @@ async def run_agent(
     if proc.returncode != 0:
         stderr_bytes = await proc.stderr.read() if proc.stderr else b""
         err = stderr_bytes.decode("utf-8", errors="replace").strip()
-        logger.error("Agent exit code %d, stderr: %s", proc.returncode, err[:500])
-        raise RuntimeError(f"Claude agent exited with code {proc.returncode}: {err}")
+        # Build a detailed error message from all available signals
+        parts = [f"Claude agent exited with code {proc.returncode}"]
+        if err:
+            parts.append(f"stderr: {err[:500]}")
+        if is_error and result_text:
+            parts.append(f"result (is_error=True): {str(result_text)[:500]}")
+        elif result_text:
+            parts.append(f"result: {str(result_text)[:300]}")
+        if stop_reason:
+            parts.append(f"stop_reason: {stop_reason}")
+        if permission_denials:
+            parts.append(f"permission_denials: {permission_denials}")
+        if last_assistant_text and not result_text:
+            parts.append(f"last agent message: {last_assistant_text[:300]}")
+        detail = "; ".join(parts)
+        logger.error(detail)
+        raise RuntimeError(detail)
 
     if is_error:
         logger.error("Agent returned is_error=True, result: %s", str(result_text)[:500])

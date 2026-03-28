@@ -370,8 +370,8 @@ async def run_cleanup_agent(text: str, fmt: DocumentFormat, timeout: int = 120) 
 # ---------------------------------------------------------------------------
 
 _CLEANUP_AND_STRUCTURE_BATCH_PROMPT = (
-    "You are a document conversion specialist. You will process a batch of text "
-    "slices extracted from a {fmt} document titled '{title}'.\n\n"
+    "You are a text cleanup specialist. You will process a batch of raw text "
+    "slices that need formatting improvement.\n\n"
     "Your working directory contains:\n"
     "- Slice files named slice_NNNN.md (the files you must process)\n"
     "- context_prev.md (preceding context, read-only — do NOT modify)\n"
@@ -386,6 +386,11 @@ _CLEANUP_AND_STRUCTURE_BATCH_PROMPT = (
     "   - ### for subsections\n"
     "   - Use context files to understand where this slice fits in the document\n"
     "4. Write the cleaned, structured result back to the SAME file\n\n"
+    "IMPORTANT: Always write files using python3 via the Bash tool, e.g.:\n"
+    "  python3 -c \"import pathlib; pathlib.Path('slice_NNNN.md').write_text('''...''')\"\n"
+    "or use a heredoc:\n"
+    "  cat > slice_NNNN.md << 'SLICE_EOF'\n  ...content...\n  SLICE_EOF\n"
+    "Do NOT use the Write or Edit tools to write slice content.\n\n"
     "Use python3 scripts via the Bash tool for any text processing that benefits "
     "from regex or programmatic manipulation.\n\n"
     "Preserve ALL meaningful content — do not summarize or omit anything.\n"
@@ -402,9 +407,7 @@ async def run_cleanup_and_structure_batch(
     max_turns: int = 50,
 ) -> None:
     """Run cleanup and structuring on a batch of slices in *batch_dir*."""
-    system_prompt = _CLEANUP_AND_STRUCTURE_BATCH_PROMPT.format(
-        fmt=fmt.value.upper(), title=title,
-    )
+    system_prompt = _CLEANUP_AND_STRUCTURE_BATCH_PROMPT
     slice_files = sorted(batch_dir.glob("slice_*.md"))
     file_list = ", ".join(f.name for f in slice_files)
     prompt = (
@@ -418,7 +421,7 @@ async def run_cleanup_and_structure_batch(
         label=f"Batch {batch_dir.name}",
         model=model,
         max_turns=max_turns,
-        allowed_tools=["Read", "Bash", "Write", "Glob", "Edit"],
+        allowed_tools=["Read", "Bash", "Glob"],
         cwd=str(batch_dir),
     )
 
@@ -428,14 +431,15 @@ async def run_cleanup_and_structure_batch(
 # ---------------------------------------------------------------------------
 
 _FINAL_CLEANUP_PROMPT = (
-    "You are a markdown editor. You have the final assembled markdown document "
-    "for '{title}'. Do a single editorial pass:\n"
-    "- Fix any duplicate headings introduced at batch boundaries\n"
+    "You are a markdown editor. You have a final assembled markdown file "
+    "that needs a single editorial pass:\n"
+    "- Fix any duplicate headings introduced at section boundaries\n"
     "- Ensure consistent heading hierarchy (# > ## > ### > ####)\n"
     "- Remove any residual conversion artifacts or repeated lines at boundaries\n"
     "- Ensure smooth transitions between sections\n"
     "- Do NOT remove or summarize any content\n\n"
-    "Read the file, edit it in place, and write the result back."
+    "Read the file, then use python3 via the Bash tool to make edits and write "
+    "the result back. Do NOT use the Write or Edit tools to write document content."
 )
 
 
@@ -447,21 +451,27 @@ async def run_final_cleanup(
     max_turns: int = 30,
 ) -> str:
     """Run a single agent pass on the final assembled markdown."""
-    system_prompt = _FINAL_CLEANUP_PROMPT.format(title=title)
+    system_prompt = _FINAL_CLEANUP_PROMPT
     prompt = (
         f"Edit the assembled markdown file at: {output_path}\n"
         f"Working directory: {output_path.parent}"
     )
-    await _run_agent_with_retry(
-        prompt,
-        system_prompt,
-        timeout,
-        label="Final cleanup",
-        model=model,
-        max_turns=max_turns,
-        allowed_tools=["Read", "Bash", "Write", "Glob", "Edit"],
-        cwd=str(output_path.parent),
-    )
+    try:
+        await _run_agent_with_retry(
+            prompt,
+            system_prompt,
+            timeout,
+            label="Final cleanup",
+            model=model,
+            max_turns=max_turns,
+            allowed_tools=["Read", "Bash", "Glob"],
+            cwd=str(output_path.parent),
+        )
+    except RuntimeError as exc:
+        if "content filtering" in str(exc).lower():
+            logger.warning("Final cleanup blocked by content filter — skipping")
+        else:
+            raise
     return output_path.read_text(encoding="utf-8")
 
 
@@ -639,6 +649,7 @@ async def run_conversion_pipeline(
         batches.append(list(range(i, min(i + batch_size, len(slice_paths)))))
 
     completed_batches = 0
+    failed_slices: list[int] = []
     stage1_start = time.monotonic()
 
     async def _process_batch(batch_indices: list[int]) -> None:
@@ -651,12 +662,30 @@ async def run_conversion_pipeline(
                 batch_indices[0], batch_indices[-1], len(batch_indices),
             )
             batch_timeout = timeout * len(batch_indices)
-            await run_cleanup_and_structure_batch(
-                batch_dir, fmt, title,
-                timeout=batch_timeout,
-                model=model,
-                max_turns=max(50, len(batch_indices) * 5),
-            )
+            try:
+                await run_cleanup_and_structure_batch(
+                    batch_dir, fmt, title,
+                    timeout=batch_timeout,
+                    model=model,
+                    max_turns=max(50, len(batch_indices) * 5),
+                )
+            except RuntimeError as exc:
+                if "content filtering" in str(exc).lower():
+                    logger.warning(
+                        "Batch slices %d–%d blocked by content filter — "
+                        "keeping raw text for %d slices",
+                        batch_indices[0], batch_indices[-1],
+                        len(batch_indices),
+                    )
+                    failed_slices.extend(batch_indices)
+                    elapsed = time.monotonic() - batch_start
+                    completed_batches += 1
+                    _progress(
+                        f"Processed batch {completed_batches}/{len(batches)} "
+                        f"({len(batch_indices)} slices kept as raw text)..."
+                    )
+                    return
+                raise
             elapsed = time.monotonic() - batch_start
             completed_batches += 1
             logger.info(
@@ -677,10 +706,18 @@ async def run_conversion_pipeline(
     await asyncio.gather(*[_process_batch(b) for b in batches])
 
     stage1_elapsed = time.monotonic() - stage1_start
-    logger.info(
-        "Stage 1 (batch cleanup+structure) complete: %d batches in %.1fs",
-        len(batches), stage1_elapsed,
-    )
+    if failed_slices:
+        logger.warning(
+            "Stage 1 complete: %d batches in %.1fs — %d/%d slices kept as raw text "
+            "(content filter). Failed slices: %s",
+            len(batches), stage1_elapsed, len(failed_slices), len(slice_paths),
+            failed_slices,
+        )
+    else:
+        logger.info(
+            "Stage 1 (batch cleanup+structure) complete: %d batches in %.1fs",
+            len(batches), stage1_elapsed,
+        )
 
     # Concatenate processed slices
     parts = []
@@ -716,6 +753,8 @@ async def convert_to_markdown(
     use_agent: bool = True,
     timeout: int | None = None,
     on_progress: Callable[[str], None] | None = None,
+    model: str | None = None,
+    batch_size: int = 20,
 ) -> tuple[str, Path | None]:
     """Convert a document to markdown.
 
@@ -736,6 +775,8 @@ async def convert_to_markdown(
             max_segment_chars=settings.agent_segment_max_chars,
             concurrency=settings.agent_concurrency,
             on_progress=on_progress,
+            model=model,
+            batch_size=batch_size,
         )
     else:
         markdown = extract_text_fallback(source_path, fmt)

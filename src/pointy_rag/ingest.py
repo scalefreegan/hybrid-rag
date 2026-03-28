@@ -28,6 +28,8 @@ async def ingest_document(
     use_agent: bool = True,
     timeout: int | None = None,
     on_progress: Callable[[str], None] | None = None,
+    model: str | None = None,
+    batch_size: int = 20,
 ) -> Document:
     """Ingest a single document through the full pipeline.
 
@@ -67,6 +69,8 @@ async def ingest_document(
             use_agent=use_agent,
             timeout=timeout,
             on_progress=on_progress,
+            model=model,
+            batch_size=batch_size,
         )
         logger.info("Converted %s to markdown (%d chars)", source_path.name, len(markdown))
 
@@ -214,6 +218,8 @@ async def ingest_paths(
     use_agent: bool = True,
     timeout: int | None = None,
     on_progress: Callable[[str], None] | None = None,
+    model: str | None = None,
+    batch_size: int = 20,
 ) -> tuple[list[Document], list[tuple[Path, Exception]]]:
     """Ingest multiple documents sequentially.
 
@@ -235,6 +241,8 @@ async def ingest_paths(
                 use_agent=use_agent,
                 timeout=timeout,
                 on_progress=on_progress,
+                model=model,
+                batch_size=batch_size,
             )
             succeeded.append(doc)
         except Exception as exc:
