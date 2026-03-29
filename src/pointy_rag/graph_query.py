@@ -153,6 +153,94 @@ def walk_hierarchy_up(
     return [_node_props(n) for n in best_path[:-1]] if best_path else []
 
 
+def _in_list(ids: list[str]) -> str:
+    """Build a Cypher IN list from node IDs."""
+    return "[" + ", ".join(f"'{escape_cypher(nid)}'" for nid in ids) + "]"
+
+
+def _batch_walk_hierarchy(
+    node_ids: list[str],
+    conn: psycopg.Connection,
+    levels_up: int,
+) -> dict[str, list[dict]]:
+    """Walk CONTAINS hierarchy upward for multiple nodes in one query.
+
+    Returns dict mapping each node_id to its ancestor chain (root → parent),
+    excluding the node itself.
+    """
+    if not node_ids:
+        return {}
+    cypher = (
+        f"MATCH path = (ancestor)-[:CONTAINS*1..{levels_up}]->(start) "
+        f"WHERE start.node_id IN {_in_list(node_ids)} "
+        f"RETURN start.node_id, nodes(path)"
+    )
+    rows = conn.execute(
+        _cypher_sql_multi(cypher, "start_id", "path_nodes")
+    ).fetchall()
+
+    # Group by start node, keep longest path per node
+    best: dict[str, list] = {}
+    for row in rows:
+        start_id = _parse_agtype(row[0])
+        if isinstance(start_id, str):
+            pass
+        elif start_id is not None:
+            start_id = str(start_id)
+        else:
+            continue
+        path_nodes = _parse_agtype(row[1])
+        if not isinstance(path_nodes, list):
+            continue
+        if start_id not in best or len(path_nodes) > len(best[start_id]):
+            best[start_id] = path_nodes
+
+    return {
+        nid: [_node_props(n) for n in nodes[:-1]]  # exclude start node
+        for nid, nodes in best.items()
+    }
+
+
+def _batch_get_similar(
+    node_ids: list[str],
+    conn: psycopg.Connection,
+    similar_hops: int,
+) -> list[tuple[str, dict, float | None]]:
+    """Get SIMILAR_TO neighbors for multiple nodes in one query.
+
+    Returns list of (source_nid, neighbor_props, score) tuples.
+    """
+    if not node_ids:
+        return []
+    cypher = (
+        f"MATCH (start)-[r:SIMILAR_TO*1..{similar_hops}]-(neighbor) "
+        f"WHERE start.node_id IN {_in_list(node_ids)} "
+        f"RETURN start.node_id, neighbor, r"
+    )
+    rows = conn.execute(
+        _cypher_sql_multi(cypher, "start_id", "neighbor", "r")
+    ).fetchall()
+
+    results: list[tuple[str, dict, float | None]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        start_id = _parse_agtype(row[0])
+        if not isinstance(start_id, str):
+            start_id = str(start_id) if start_id is not None else None
+        if not start_id:
+            continue
+        neighbor = _node_props(row[1])
+        nid = neighbor.get("node_id")
+        if not nid or nid in node_ids:
+            continue
+        pair = (start_id, nid)
+        if pair not in seen:
+            seen.add(pair)
+            score = _edge_score_from(row[2])
+            results.append((start_id, neighbor, score))
+    return results
+
+
 def build_context_subgraph(
     match_node_ids: list[str],
     conn: psycopg.Connection,
@@ -162,21 +250,12 @@ def build_context_subgraph(
 ) -> ContextSubgraph:
     """Build a context subgraph for a set of matched nodes.
 
+    Uses batched Cypher queries (2 queries total) instead of per-node queries.
+
     For each matched node:
     - Walks up the CONTAINS hierarchy to gather parent context.
     - Optionally traverses SIMILAR_TO edges to gather semantically related nodes.
     - For similar nodes, also walks up their hierarchy 1 level.
-
-    All collected nodes are deduplicated by node_id. The hierarchy dict captures
-    parent_id -> [child_ids] CONTAINS relationships discovered during traversal.
-    Content is NOT fetched here — the llms_txt assembler retrieves it from PG tables.
-
-    Args:
-        match_node_ids: Node IDs from the initial vector/BM25 search.
-        conn: Active psycopg connection with AGE loaded.
-        hierarchy_levels_up: How many CONTAINS levels to walk up for each match.
-        include_similar: Whether to traverse SIMILAR_TO edges.
-        similar_hops: Max hops for SIMILAR_TO traversal.
 
     Returns:
         ContextSubgraph with typed nodes, edges, matches, and hierarchy.
@@ -185,9 +264,11 @@ def build_context_subgraph(
     all_edges: list[GraphEdge] = []
     hierarchy: dict[str, list[str]] = {}
 
+    # Query 1: Batch hierarchy walk for all match nodes
+    ancestors_by_node = _batch_walk_hierarchy(match_node_ids, conn, hierarchy_levels_up)
+
     for nid in match_node_ids:
-        # Walk hierarchy upward for this match node
-        ancestors = walk_hierarchy_up(nid, conn, hierarchy_levels_up)
+        ancestors = ancestors_by_node.get(nid, [])
         prev_id: str | None = None
         for ancestor in ancestors:
             aid = ancestor.get("node_id")
@@ -199,31 +280,30 @@ def build_context_subgraph(
                 if aid not in hierarchy[prev_id]:
                     hierarchy[prev_id].append(aid)
             prev_id = aid
-        # The last ancestor in the chain CONTAINS the match node
         if prev_id:
             hierarchy.setdefault(prev_id, [])
             if nid not in hierarchy[prev_id]:
                 hierarchy[prev_id].append(nid)
 
-        # Traverse SIMILAR_TO neighbors
-        if include_similar:
-            similar_nodes = get_neighbors(nid, conn, "SIMILAR_TO", similar_hops)
-            for sim_node in similar_nodes:
-                sim_id = sim_node.get("node_id")
-                if not sim_id:
-                    continue
-                all_nodes[sim_id] = sim_node
-                all_edges.append(
-                    GraphEdge(
-                        type="SIMILAR_TO",
-                        source=nid,
-                        target=sim_id,
-                        score=sim_node.get("edge_score"),
-                    )
-                )
-                # Walk up 1 hierarchy level for each similar node
-                sim_ancestors = walk_hierarchy_up(sim_id, conn, 1)
-                for ancestor in sim_ancestors:
+    # Query 2: Batch SIMILAR_TO neighbors
+    if include_similar:
+        similar_edges = _batch_get_similar(match_node_ids, conn, similar_hops)
+        sim_ids: list[str] = []
+        for source_nid, sim_node, score in similar_edges:
+            sim_id = sim_node.get("node_id")
+            if not sim_id:
+                continue
+            all_nodes[sim_id] = sim_node
+            all_edges.append(
+                GraphEdge(type="SIMILAR_TO", source=source_nid, target=sim_id, score=score)
+            )
+            sim_ids.append(sim_id)
+
+        # Query 3: Batch hierarchy walk for similar nodes (1 level up)
+        if sim_ids:
+            sim_ancestors = _batch_walk_hierarchy(sim_ids, conn, 1)
+            for sim_id in sim_ids:
+                for ancestor in sim_ancestors.get(sim_id, []):
                     aid = ancestor.get("node_id")
                     if not aid:
                         continue

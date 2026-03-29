@@ -233,7 +233,7 @@ def explore(
     threshold: float = 0.6,
     hierarchy_levels_up: int = 3,
     include_similar: bool = True,
-    similar_hops: int = 2,
+    similar_hops: int = 1,
 ) -> ExploreResult:
     """Run vector search and produce a three-layer progressive disclosure package.
 

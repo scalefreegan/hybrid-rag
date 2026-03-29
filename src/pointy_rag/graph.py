@@ -51,6 +51,24 @@ def ensure_graph(conn: psycopg.Connection) -> None:
     ).fetchone()
     if row is None:
         conn.execute("SELECT ag_catalog.create_graph(%s)", (GRAPH_NAME,))
+    _ensure_graph_indexes(conn)
+
+
+def _ensure_graph_indexes(conn: psycopg.Connection) -> None:
+    """Create property indexes on AGE vertex tables for fast node_id lookups.
+
+    AGE stores properties as ``agtype``, so we use ``agtype_access_operator``
+    instead of the standard ``->>`` operator.
+    """
+    for label in ("ChunkNode", "DisclosureNode"):
+        try:
+            conn.execute(
+                f"CREATE INDEX IF NOT EXISTS idx_{label.lower()}_node_id "
+                f'ON {GRAPH_NAME}."{label}" USING btree '
+                f"""((ag_catalog.agtype_access_operator(properties, '"node_id"'::ag_catalog.agtype)))"""
+            )
+        except psycopg.Error:
+            pass  # Table may not exist yet on fresh graphs
 
 
 def create_disclosure_node(ddoc: DisclosureDoc, conn: psycopg.Connection) -> None:
