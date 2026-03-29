@@ -508,9 +508,10 @@ async def run_final_cleanup(
             allowed_tools=["Read", "Bash", "Glob"],
             cwd=str(output_path.parent),
         )
-    except RuntimeError as exc:
-        if "content filtering" in str(exc).lower():
-            logger.warning("Final cleanup blocked by content filter — skipping")
+    except (RuntimeError, TimeoutError) as exc:
+        exc_str = str(exc).lower()
+        if "content filtering" in exc_str or "hit your limit" in exc_str or "rate" in exc_str:
+            logger.warning("Final cleanup agent failed (%s) — skipping", type(exc).__name__)
         else:
             raise
     return output_path.read_text(encoding="utf-8")
@@ -648,6 +649,7 @@ async def run_conversion_pipeline(
     on_progress: Callable[[str], None] | None = None,
     batch_size: int = 20,
     model: str | None = None,
+    output_dir: Path | None = None,
 ) -> str:
     """Run the full multi-stage conversion pipeline.
 
@@ -683,6 +685,13 @@ async def run_conversion_pipeline(
     # Normalize long lines so Edit tool can handle them
     _normalize_slices(slice_paths)
 
+    # Save intermediate raw extraction so OCR work isn't lost
+    if output_dir is not None:
+        raw_path = Path(output_dir) / f"{source_path.stem}.raw.md"
+        raw_parts = [sp.read_text(encoding="utf-8") for sp in slice_paths]
+        raw_path.write_text("\n\n".join(raw_parts), encoding="utf-8")
+        logger.info("Saved raw extraction to %s", raw_path)
+
     # Stage 1: Batch cleanup-and-structure (parallel batches, bounded concurrency)
     sem = asyncio.Semaphore(concurrency)
     batches: list[list[int]] = []
@@ -710,13 +719,14 @@ async def run_conversion_pipeline(
                     model=model,
                     max_turns=max(50, len(batch_indices) * 5),
                 )
-            except RuntimeError as exc:
-                if "content filtering" in str(exc).lower():
+            except (RuntimeError, TimeoutError) as exc:
+                exc_str = str(exc).lower()
+                if "content filtering" in exc_str or "hit your limit" in exc_str or "rate" in exc_str:
                     logger.warning(
-                        "Batch slices %d–%d blocked by content filter — "
+                        "Batch slices %d–%d agent failed (%s) — "
                         "keeping raw text for %d slices",
                         batch_indices[0], batch_indices[-1],
-                        len(batch_indices),
+                        type(exc).__name__, len(batch_indices),
                     )
                     failed_slices.extend(batch_indices)
                     elapsed = time.monotonic() - batch_start
@@ -847,6 +857,7 @@ async def convert_to_markdown(
             on_progress=on_progress,
             model=model,
             batch_size=batch_size,
+            output_dir=Path(output_dir) if output_dir else None,
         )
     else:
         markdown = extract_text_fallback(source_path, fmt)
