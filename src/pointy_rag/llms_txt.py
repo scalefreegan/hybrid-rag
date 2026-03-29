@@ -374,7 +374,7 @@ def assemble_explore_llms_txt(
     n_edges = len(subgraph.edges)
 
     sections: list[str] = [
-        f'# Explore: "{query}"',
+        f"# Explore: {query}",
         "",
         f"> {n_matches} matches across {n_docs} documents, "
         f"{len(nodes_index)} nodes in context graph, {n_edges} similarity edges",

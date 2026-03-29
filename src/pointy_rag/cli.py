@@ -348,7 +348,7 @@ def search(
 
 @app.command("graph-search")
 def graph_search_cmd(
-    query: Annotated[str, typer.Argument(help="Search query")],
+    query: Annotated[list[str], typer.Argument(help="Search queries (multiple for compound search)")],
     limit: Annotated[
         int,
         typer.Option("--limit", "-n", help="Number of results", min=1, max=100),
@@ -373,7 +373,7 @@ def graph_search_cmd(
     try:
         with get_connection() as conn:
             result = graph_search(
-                query,
+                query if len(query) > 1 else query[0],
                 conn,
                 limit=limit,
                 threshold=threshold,
@@ -400,7 +400,7 @@ def graph_search_cmd(
 
 @app.command()
 def explore(
-    query: Annotated[str, typer.Argument(help="Search query")],
+    query: Annotated[list[str], typer.Argument(help="Search queries (multiple for compound search)")],
     limit: Annotated[
         int,
         typer.Option("--limit", "-n", help="Number of results", min=1, max=100),
@@ -432,7 +432,7 @@ def explore(
     try:
         with get_connection() as conn:
             result = explore_search(
-                query,
+                query if len(query) > 1 else query[0],
                 conn,
                 limit=limit,
                 threshold=threshold,

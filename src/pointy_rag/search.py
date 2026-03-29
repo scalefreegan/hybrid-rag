@@ -6,7 +6,7 @@ import psycopg
 import psycopg.rows
 
 from pointy_rag.db import get_disclosure_doc
-from pointy_rag.embeddings import embed_query
+from pointy_rag.embeddings import embed_query, embed_texts
 from pointy_rag.models import (
     Chunk,
     DisclosureDoc,
@@ -110,6 +110,92 @@ def search(
     return results
 
 
+def search_multiple(
+    queries: list[str],
+    conn: psycopg.Connection,
+    limit: int = 10,
+    threshold: float = 0.7,
+) -> list[SearchResult]:
+    """Embed multiple queries in one batch, run parallel vector searches, merge results.
+
+    Results are deduplicated by chunk_id, keeping the highest score per chunk.
+    Returns top ``limit`` results sorted by descending score.
+    """
+    if len(queries) == 1:
+        return search(queries[0], conn, limit=limit, threshold=threshold)
+
+    embeddings = embed_texts(queries)
+
+    # Run one vector search per embedding, collect all results
+    best: dict[str, SearchResult] = {}  # chunk_id -> best result
+    cursor = conn.cursor(row_factory=psycopg.rows.dict_row)
+
+    for embedding in embeddings:
+        rows = cursor.execute(
+            """
+            WITH scored AS (
+                SELECT
+                    c.id AS chunk_id, c.disclosure_doc_id, c.content AS chunk_content,
+                    c.metadata AS chunk_metadata,
+                    1 - (c.embedding <=> %s::vector) AS score
+                FROM chunks c
+                WHERE c.embedding IS NOT NULL
+            )
+            SELECT
+                s.chunk_id, s.disclosure_doc_id, s.chunk_content, s.chunk_metadata,
+                s.score,
+                dd.id AS dd_id, dd.document_id AS dd_document_id,
+                dd.parent_id AS dd_parent_id, dd.level AS dd_level,
+                dd.title AS dd_title, dd.content AS dd_content,
+                dd.ordering AS dd_ordering,
+                doc.id AS doc_id, doc.title AS doc_title, doc.format AS doc_format,
+                doc.source_path AS doc_source_path, doc.metadata AS doc_metadata,
+                doc.created_at AS doc_created_at
+            FROM scored s
+            JOIN disclosure_docs dd ON dd.id = s.disclosure_doc_id
+            JOIN documents doc ON doc.id = dd.document_id
+            WHERE s.score >= %s
+            ORDER BY s.score DESC
+            LIMIT %s
+            """,
+            (embedding, threshold, limit),
+        ).fetchall()
+
+        for row in rows:
+            chunk_id = row["chunk_id"]
+            if chunk_id in best and best[chunk_id].score >= row["score"]:
+                continue
+            chunk = Chunk(
+                id=chunk_id,
+                disclosure_doc_id=row["disclosure_doc_id"],
+                content=row["chunk_content"],
+                embedding=None,
+                metadata=row["chunk_metadata"],
+            )
+            ddoc = DisclosureDoc(
+                id=row["dd_id"],
+                document_id=row["dd_document_id"],
+                parent_id=row["dd_parent_id"],
+                level=row["dd_level"],
+                title=row["dd_title"],
+                content=row["dd_content"],
+                ordering=row["dd_ordering"],
+            )
+            doc = Document(
+                id=row["doc_id"],
+                title=row["doc_title"],
+                format=row["doc_format"],
+                source_path=row["doc_source_path"],
+                metadata=row["doc_metadata"],
+                created_at=row["doc_created_at"],
+            )
+            best[chunk_id] = SearchResult(
+                chunk=chunk, score=row["score"], document=doc, disclosure_doc=ddoc,
+            )
+
+    return sorted(best.values(), key=lambda r: r.score, reverse=True)[:limit]
+
+
 def batch_children_counts(
     disclosure_doc_ids: list[str],
     conn: psycopg.Connection,
@@ -166,7 +252,7 @@ def get_children(
 
 
 def graph_search(
-    query: str,
+    query: str | list[str],
     conn: psycopg.Connection,
     limit: int = 10,
     threshold: float = 0.7,
@@ -176,7 +262,7 @@ def graph_search(
     """Run vector search then expand results via the knowledge graph.
 
     Args:
-        query: The search query text.
+        query: Search query text, or list of queries for compound search.
         conn: Active database connection.
         limit: Maximum number of vector results.
         threshold: Minimum cosine similarity score (0-1).
@@ -191,7 +277,8 @@ def graph_search(
     from pointy_rag import graph_query, llms_txt
     from pointy_rag.config import get_settings
 
-    results = search(query, conn, limit=limit, threshold=threshold)
+    queries = [query] if isinstance(query, str) else query
+    results = search_multiple(queries, conn, limit=limit, threshold=threshold)
 
     if not get_settings().kg_enabled or not results:
         return GraphSearchResult(
@@ -227,7 +314,7 @@ def graph_search(
 
 
 def explore(
-    query: str,
+    query: str | list[str],
     conn: psycopg.Connection,
     limit: int = 10,
     threshold: float = 0.6,
@@ -237,7 +324,9 @@ def explore(
 ) -> ExploreResult:
     """Run vector search and produce a three-layer progressive disclosure package.
 
-    Deeper/wider traversal defaults than graph_search for thorough exploration.
+    Accepts a single query or list of queries for compound multi-angle search.
+    Multiple queries are embedded in one batch, searched independently, and
+    merged by highest score per chunk before graph expansion.
 
     Returns:
         ExploreResult with overview, llms_txt, and per-node content files.
@@ -246,7 +335,8 @@ def explore(
     from pointy_rag import graph_query, llms_txt
     from pointy_rag.config import get_settings
 
-    results = search(query, conn, limit=limit, threshold=threshold)
+    queries = [query] if isinstance(query, str) else query
+    results = search_multiple(queries, conn, limit=limit, threshold=threshold)
 
     if not get_settings().kg_enabled or not results:
         return ExploreResult(
@@ -265,8 +355,9 @@ def explore(
         subgraph = graph_query.build_context_subgraph(
             node_ids, conn, hierarchy_levels_up, include_similar, similar_hops
         )
+        query_label = " + ".join(f'"{q}"' for q in queries)
         overview, llms_txt_doc, contents = llms_txt.assemble_explore(
-            subgraph, conn, query
+            subgraph, conn, query_label
         )
     except psycopg.Error:
         logger.warning("Graph expansion failed for explore", exc_info=True)
