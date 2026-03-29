@@ -14,7 +14,11 @@ from rich.console import Console
 
 app = typer.Typer(
     name="pointy-rag",
-    help="Hybrid RAG with Voyage AI embeddings and pgvector.",
+    help=(
+        "Hybrid RAG with Voyage AI embeddings and pgvector.\n\n"
+        "AI agent integration: run 'pointy-rag install-skill' to install the "
+        "Claude Code skill, or 'pointy-rag install-skill --global' for all projects."
+    ),
     no_args_is_help=True,
 )
 
@@ -753,7 +757,11 @@ def install_skill(
         ),
     ] = "claude",
 ):
-    """Install the pointy-rag Claude Code skill."""
+    """Install the pointy-rag skill so AI agents know how to use the CLI.
+
+    Copies the skill guide to the agent's skills directory. Agents will then
+    auto-discover commands, options, compound queries, and workflows.
+    """
     # 1. Locate bundled SKILL.md
     skill_pkg = importlib.resources.files("pointy_rag._skill")
     skill_src = skill_pkg / "SKILL.md"
