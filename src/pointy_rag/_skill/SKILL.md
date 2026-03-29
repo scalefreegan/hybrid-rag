@@ -70,7 +70,28 @@ pointy-rag ingest report.pdf --output-dir ./markdown_output
 
 # Ingest without Claude agent (faster, but no disclosure hierarchy)
 pointy-rag ingest report.pdf --no-agent
+
+# Use a specific model for agent conversion
+pointy-rag ingest report.pdf --model opus
+
+# Control batch size (slices per agent session, default 20)
+pointy-rag ingest report.pdf --batch-size 10
 ```
+
+### Scanned PDF support (OCR)
+
+Scanned/image-based PDFs are automatically OCR'd using Tesseract when `tesseract` is on PATH. Pages with embedded text are extracted normally; only blank pages fall back to OCR. Install Tesseract:
+
+```bash
+brew install tesseract   # macOS
+apt install tesseract-ocr # Debian/Ubuntu
+```
+
+Set `POINTY_OCR_ENABLED=false` to disable OCR (scanned pages will be skipped).
+
+### Content filter resilience
+
+If the Claude Code CLI content filter blocks agent processing (e.g. for alcohol/brewing content), the pipeline gracefully falls back to raw text extraction. Batches that fail are skipped after the first round, and the final cleanup pass still runs to add heading structure. Failed slices are logged but don't crash the pipeline.
 
 What happens during ingestion:
 1. **Convert** — PDF/EPUB is converted to markdown (uses Claude agent by default)
@@ -190,7 +211,7 @@ pointy-rag graph-backfill
 
 ## Explore mode
 
-Explore mode produces a **three-layer progressive disclosure package** — ideal for AI agents that need structured context with drill-down capability. It uses deeper traversal defaults than `graph-search` (3 hierarchy levels up, 2 similarity hops).
+Explore mode produces a **three-layer progressive disclosure package** — ideal for AI agents that need structured context with drill-down capability. It uses deeper traversal defaults than `graph-search` (3 hierarchy levels up, 1 similarity hop).
 
 ```bash
 pointy-rag explore "transformer architecture"
@@ -210,6 +231,27 @@ pointy-rag explore "attention mechanisms" --output ./my-explore
 # Broader results with lower threshold
 pointy-rag explore "machine learning" --threshold 0.4 --limit 20
 ```
+
+### Compound multi-query search
+
+Pass multiple queries as separate arguments to search from multiple angles simultaneously. Queries are embedded in a single batch API call, searched independently, and merged by highest score per chunk before graph expansion. This produces broader coverage than any single query.
+
+```bash
+# Compound search — 4 angles, one unified result
+pointy-rag explore \
+  "IPA grain bill 2-row pale malt" \
+  "hop schedule dry hop Simcoe Citra" \
+  "clean ale yeast fermentation" \
+  "water chemistry sulfate gypsum" \
+  --output ./ipa-research
+
+# Also works with graph-search
+pointy-rag graph-search \
+  "mashing temperature enzyme activity" \
+  "fermentation schedule lager ale"
+```
+
+Single queries still work as before — backward compatible. The compound mode is useful for research tasks where you need to pull from multiple topic areas into one context package.
 
 ### Output structure
 
@@ -290,6 +332,20 @@ pointy-rag explore "quantum computing" --output ./quantum-context
 # 4. For full content on specific nodes, it reads contents/<node-id>.md
 ```
 
+### Research a topic from multiple angles
+
+```bash
+# Compound query pulls from grain, hops, yeast, and water perspectives
+pointy-rag explore \
+  "IPA grain bill pale malt simple fermentable" \
+  "hop schedule dry hop whirlpool additions" \
+  "clean ale yeast fermentation temperature attenuation" \
+  "brewing water sulfate calcium mineral profile" \
+  --output ./ipa-research
+
+# Result: unified 3-layer package covering all angles (~2s total)
+```
+
 ### Enable knowledge graph on existing data
 
 ```bash
@@ -317,3 +373,7 @@ pointy-rag graph-search "your query"
 | `POINTY_KG_MAX_NEIGHBORS` | No | `20` | Maximum similarity edges per node |
 | `POINTY_KG_HIERARCHY_LEVELS_UP` | No | `1` | Default hierarchy levels to walk up in graph-search |
 | `POINTY_KG_SIMILAR_HOPS` | No | `1` | Default SIMILAR_TO traversal depth |
+| `POINTY_OCR_ENABLED` | No | `true` | Enable Tesseract OCR for scanned PDF pages |
+| `POINTY_AGENT_TIMEOUT` | No | `300` | Agent timeout in seconds per stage |
+| `POINTY_AGENT_CONCURRENCY` | No | `2` | Max concurrent agent batches during conversion |
+| `POINTY_AGENT_SEGMENT_MAX_CHARS` | No | `10000` | Max chars per text segment for grouping |
