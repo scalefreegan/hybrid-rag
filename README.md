@@ -56,26 +56,6 @@ converter ──► markdown
                                 └── explore ──► 3-layer package (overview + llms.txt + contents/)
 ```
 
-### Module map
-
-| Module | Role |
-|--------|------|
-| `cli.py` | Typer CLI entry point |
-| `config.py` | Settings from `.env` / environment |
-| `converter.py` | PDF/EPUB to markdown (agent or fallback) |
-| `chunker.py` | Markdown-aware text chunking with overlap |
-| `embeddings.py` | Voyage AI embedding client (voyage-4-lite, 1024-dim) |
-| `db.py` | PostgreSQL/pgvector schema, CRUD, connection management |
-| `models.py` | Pydantic data models (Document, DisclosureDoc, Chunk, SearchResult, GraphSearchResult, ExploreResult) |
-| `disclosure.py` | 4-level disclosure hierarchy generator |
-| `claude_agent.py` | Headless Claude Code subprocess wrapper |
-| `pointer_mapper.py` | Maps text chunks to disclosure docs by heading/Jaccard similarity |
-| `ingest.py` | End-to-end ingestion pipeline (with optional KG population) |
-| `search.py` | Vector search with disclosure pointers, drill-down, graph enrichment, and explore mode |
-| `graph.py` | Apache AGE knowledge graph — node/edge CRUD, similarity edges |
-| `graph_query.py` | Graph traversal — neighbor expansion, hierarchy walking, subgraph assembly |
-| `llms_txt.py` | Renders context subgraphs as llms.txt references and three-layer explore packages |
-
 Search embeds the query with Voyage AI and ranks chunks by cosine similarity in pgvector (`--threshold` sets the minimum score). Each hit is then joined to its disclosure doc and parent document, so you get a pointer into the hierarchy rather than an orphan chunk. With the knowledge graph enabled, results can also be expanded by walking up the hierarchy and across `SIMILAR_TO` edges to related content in other documents.
 
 <details>
@@ -85,6 +65,7 @@ Search embeds the query with Voyage AI and ranks chunks by cosine similarity in 
 |--------|------|
 | `cli.py` | Typer CLI entry point |
 | `config.py` | Settings from `.env` / environment |
+| `workspace.py` | Workspace directories and the `.pointy-rag.toml` marker that binds one to a database |
 | `converter.py` | PDF/EPUB to markdown (agent or fallback) |
 | `chunker.py` | Markdown-aware text chunking with overlap |
 | `embeddings.py` | Voyage AI embedding client (voyage-4-lite, 1024-dim) |
@@ -110,6 +91,7 @@ Search embeds the query with Voyage AI and ranks chunks by cosine similarity in 
 - **PostgreSQL 13+** with the [pgvector](https://github.com/pgvector/pgvector) extension
 - **[Apache AGE](https://age.apache.org/)** PostgreSQL extension (optional — for knowledge graph features)
 - **Voyage AI API key** — get one at [dash.voyageai.com](https://dash.voyageai.com)
+- **[Tesseract](https://github.com/tesseract-ocr/tesseract)** (optional) — OCR fallback for scanned PDF pages; used when the `tesseract` binary is on `PATH` (disable with `POINTY_OCR_ENABLED=false`)
 - **Claude Code CLI** (optional) — enables agent-powered document conversion and disclosure generation. Without it, pointy-rag falls back to library-based extraction (no disclosure hierarchy).
 
 ### Install and run
@@ -122,7 +104,11 @@ uv sync --dev
 cp .env.example .env
 # Edit .env: fill in VOYAGE_API_KEY and POINTY_DATABASE_URL
 
-uv run pointy-rag init                      # create tables and indexes
+# Create a workspace: makes the directory and database, creates tables,
+# and writes a .pointy-rag.toml marker. Run the next commands from inside it
+# (or pass -w <dir>).
+uv run pointy-rag init ./my-library
+cd my-library
 uv run pointy-rag ingest paper.pdf book.epub
 uv run pointy-rag search "transformer attention mechanism"
 uv run pointy-rag drill <disclosure-doc-id> # view a result's children
@@ -132,9 +118,9 @@ uv run pointy-rag drill <disclosure-doc-id> # view a result's children
 
 | Command | Description | Key flags |
 |---------|-------------|-----------|
-| `init` | Create database tables and indexes | `--database-url` |
-| `ingest` | Ingest PDF/EPUB files into the vector store | `--output-dir`, `--no-agent` |
-| `convert` | Convert PDF/EPUB to markdown without ingesting | `--output-dir`, `--no-agent` |
+| `init [PATH]` | Initialize a workspace: create the directory, database, tables, and `.pointy-rag.toml` marker (database name is derived from the directory name unless overridden) | `--database-url` |
+| `ingest` | Ingest PDF/EPUB files into the vector store | `--output-dir`, `--no-agent`, `--timeout`, `--model`, `--batch-size` |
+| `convert` | Convert PDF/EPUB to markdown without ingesting | `--output-dir`, `--no-agent`, `--timeout`, `--model`, `--batch-size` |
 | `search` | Semantic search with pointer-based results | `--limit`, `--threshold`, `--level`, `--content`, `--graph` |
 | `graph-search` | Search + knowledge graph enrichment → llms.txt reference | `--limit`, `--threshold`, `--levels-up`, `--no-similar` |
 | `explore` | Three-layer progressive disclosure package (overview + llms.txt + per-node content) | `--limit`, `--threshold`, `--levels-up`, `--no-similar`, `--output` |
@@ -143,6 +129,10 @@ uv run pointy-rag drill <disclosure-doc-id> # view a result's children
 | `drill` | Drill into a disclosure doc and view its children | `--content` |
 | `ls` | List all ingested documents with chunk/disclosure counts | |
 | `install-skill` | Install the Claude Code skill for interactive guidance | `--global`, `--agent` |
+
+Global options: `-w/--workspace <dir>` selects a workspace, and `-v/--verbose` enables detailed logging. The database URL is resolved from `--database-url` (on `init`), then the active workspace marker, then `POINTY_DATABASE_URL`.
+
+`graph-search` and `explore` accept several queries at once for compound search (`pointy-rag graph-search "query one" "query two"`). Defaults: `search` and `graph-search` use `--threshold 0.7`; `explore` uses `--threshold 0.6` and `--levels-up 3`.
 
 Run `uv run pointy-rag <command> --help` for full flag documentation.
 
@@ -157,6 +147,17 @@ uv run pointy-rag search "neural networks" --level 2 --content
 
 # List all documents
 uv run pointy-rag ls
+```
+
+### Other settings
+
+Environment variables read in `config.py` (defaults shown):
+
+```bash
+POINTY_AGENT_TIMEOUT=300             # Claude agent timeout, seconds
+POINTY_AGENT_SEGMENT_MAX_CHARS=10000 # Max characters per agent segment
+POINTY_AGENT_CONCURRENCY=2           # Concurrent agent calls
+POINTY_OCR_ENABLED=true              # Tesseract OCR fallback for scanned PDF pages
 ```
 
 ## Disclosure hierarchy
@@ -248,7 +249,7 @@ uv run pointy-rag explore "transformer architecture" --output ./explore-output
 | 2 | `llms.txt` | Detailed navigational TOC with heading depths, level labels, content snippets, and `→ contents/{id}.md` links |
 | 3 | `contents/{id}.md` | Full node content with YAML frontmatter (node_id, title, level, document, role) and ancestor context inlined |
 
-Explore uses deeper traversal defaults than `graph-search` (3 hierarchy levels up, 2 similarity hops) for thorough context gathering.
+Explore uses deeper traversal defaults than `graph-search` (3 hierarchy levels up and a 0.6 default threshold) for thorough context gathering.
 
 ## Claude Code skill
 
