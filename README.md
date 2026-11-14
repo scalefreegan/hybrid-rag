@@ -290,5 +290,3 @@ uv run ruff format --check src/ tests/
 ```
 
 CI runs lint and tests on every push and pull request to `main`.
-
-CI runs lint and tests on every push and pull request to `main`.
