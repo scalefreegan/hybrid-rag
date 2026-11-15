@@ -14,7 +14,6 @@
   <br>
   <sub><i>A query lands on a high-level summary, then drills down through sections to the exact passage.</i></sub>
 </p>
-<!-- TODO: generate docs/hero.png from docs/hero-image-prompt.md -->
 
 ## Features
 
