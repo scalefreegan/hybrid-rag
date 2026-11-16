@@ -1,6 +1,7 @@
 [project]
 name = "pointy-rag"
 version = "0.1.0"
+license = "AGPL-3.0-only"
 description = "Hybrid RAG with Voyage AI embeddings and pgvector"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -290,3 +290,7 @@ uv run ruff format --check src/ tests/
 ```
 
 CI runs lint and tests on every push and pull request to `main`.
+
+## License
+
+[GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only). You may use, change and share pointy-rag, but if you distribute it or run a changed version as a network service, you must offer its users the complete source under the same license.
